@@ -1,0 +1,63 @@
+project:
+  workspace_root: ~/MobyAI/projects
+
+runtime:
+  max_task_attempts: 2
+  command_timeout_seconds: 600
+  checkpointing: true
+  max_output_bytes: 1048576
+  max_log_bytes: 52428800
+  max_schema_repair_attempts: 2
+  inference_timeout_seconds: 120
+  max_worker_turns: 8
+
+context:
+  worker_token_budget: 48000
+  log_tail_lines: 150
+
+persistence:
+  database_path: ~/MobyAI/mobyai.db
+
+services:
+  mode: external
+  health_timeout_seconds: 60
+  health_poll_interval_seconds: 0.5
+  stop_timeout_seconds: 15
+  swap_shared_device: true
+
+hardware:
+  planner:
+    device: 0
+  orchestrator:
+    device: 1
+  worker:
+    device: 0
+
+models:
+  planner:
+    provider: openai_compatible
+    engine: vllm
+    model: configurable-planner-model
+    gpu: 0
+    endpoint: http://127.0.0.1:9802
+    quantization: q4
+    kv_cache_dtype: fp8
+  orchestrator:
+    provider: openai_compatible
+    engine: configurable
+    model: configurable-small-model
+    gpu: 1
+    endpoint: http://127.0.0.1:9801
+  worker:
+    provider: openai_compatible
+    engine: vllm
+    model: configurable-coding-model
+    gpu: 0
+    endpoint: http://127.0.0.1:9800
+    inference:
+      tensor_parallel_size: 1
+      max_model_len: 65536
+      kv_cache_dtype: fp8
+      gpu_memory_utilization: 0.92
+      enable_chunked_prefill: true
+      max_num_seqs: 16
