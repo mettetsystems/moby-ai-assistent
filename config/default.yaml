@@ -1,7 +1,19 @@
+# Reference configuration for external inference servers.
+# Field-by-field operator guide: docs/setup.md
+# First-run wizard: ./scripts/setup.sh   or   python -m mobyai setup
+#
+# Copy this file, replace configurable-*-model with ids from GET /v1/models,
+# then: mobyai --config PATH config validate
+#
+# services.mode: external means you start the three HTTP servers. MobyAI only
+# healthchecks them. Use config/examples/managed.yaml to spawn processes instead.
+
 project:
+  # Per-project workspaces are created under this root unless init --workspace is set.
   workspace_root: ~/MobyAI/projects
 
 runtime:
+  # First failure retries; second failure escalates to a DAG branch patch.
   max_task_attempts: 2
   command_timeout_seconds: 600
   checkpointing: true
@@ -16,6 +28,7 @@ context:
   log_tail_lines: 150
 
 persistence:
+  # Crash recovery. mobyai resume reloads this file, not a chat transcript.
   database_path: ~/MobyAI/mobyai.db
 
 services:
@@ -26,6 +39,7 @@ services:
   swap_shared_device: true
 
 hardware:
+  # Device indices are configuration, not code constants. Use cpu to skip CUDA.
   planner:
     device: 0
   orchestrator:

@@ -1,4 +1,5 @@
 # Reference dual-GPU layout. Device indices are configuration, not code constants.
+# Operator walkthrough: docs/setup.md
 # GPU 0: planner + worker (time-multiplexed by InferenceServiceManager when managed)
 # GPU 1: orchestrator (isolated CUDA process)
 # Default mode is external: endpoints are assumed already running.

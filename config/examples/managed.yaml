@@ -1,6 +1,11 @@
 # Managed-process example. Device indices are configuration, not code constants.
-# External endpoint mode (config/default.yaml) should be used unless this process
-# should spawn isolated CUDA servers itself.
+# Operator walkthrough: docs/setup.md
+# First-run wizard (writes launch argv): ./scripts/setup.sh --mode managed
+#
+# MobyAI spawns isolated CUDA servers from each role's `launch` list and sets
+# CUDA_VISIBLE_DEVICES from hardware.<role>.device. Planner and Worker that share
+# a device are swapped; they are not loaded at the same time.
+# Use config/default.yaml instead if you already run the HTTP servers yourself.
 
 project:
   workspace_root: ~/MobyAI/projects

@@ -408,7 +408,7 @@ Design record for major subsystems. Each section covers what it does, why it exi
 
 ### Commands (`src/mobyai/cli.py`)
 
-**What it does.** stdlib argparse surface: `init`, `doctor`, `start`, `run`, `status`, `pause`, `resume`, `stop`, `tasks`, `logs`, `models`, `config validate`. `--config` / `MOBYAI_CONFIG` / `./config/default.yaml` / `~/MobyAI/config.yaml`.
+**What it does.** stdlib argparse surface: `setup`, `init`, `doctor`, `start`, `run`, `status`, `pause`, `resume`, `stop`, `tasks`, `logs`, `models`, `config validate`. `--config` / `MOBYAI_CONFIG` / `./config.yaml` / `./config/default.yaml` / `~/MobyAI/config.yaml`.
 
 **Why it exists.** Operators need a way to create projects, inspect DAG progress, pause, and continue after a crash without a GUI.
 
@@ -417,6 +417,18 @@ Design record for major subsystems. Each section covers what it does, why it exi
 **Alternatives considered.** Click/Typer (extra dependency); JSON-only output (worse for a local operator); auto-unpausing inside the store (hides operator intent).
 
 **How to replace.** Add subcommands in `parse_args`. Keep side effects in engine modules. `mobyai doctor` should keep going after a single failed check so the operator sees the full board.
+
+### First-run setup (`src/mobyai/setup.py`, `scripts/setup.sh`)
+
+**What it does.** `scripts/setup.sh` checks Python 3.12+, creates `.venv`, installs the package, then runs `mobyai setup`. The wizard writes a commented `config.yaml` (workspace, SQLite path, `external` vs `managed`, per-role model/endpoint/device) and optionally creates directories. `--non-interactive` uses defaults plus flags. It does not download weights or start servers.
+
+**Why it exists.** Copying `default.yaml` and guessing search order is how first runs fail. The operator needs one explicit path from clone to `doctor`.
+
+**Why this design.** Bash owns venv/pip (OS-level). Python owns YAML so `AppConfig` validates before the file hits disk. Prompts are skipped when flags are set. Existing files require `--force` or an interactive yes.
+
+**Alternatives considered.** Only documenting commands in the README (easy to skip a step); generating config from environment variables (hostile for three model endpoints); installing vLLM inside the same venv by default (the harness must not depend on an engine SDK).
+
+**How to replace.** Keep `run_setup` as the writer. Change prompt copy in `setup.py` and the pause text in `scripts/setup.sh` together with `docs/setup.md`.
 
 ---
 

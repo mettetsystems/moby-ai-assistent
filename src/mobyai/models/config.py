@@ -130,9 +130,15 @@ class AppConfig(_StrictModel):
     hardware: HardwareConfig | None = None
 
     @classmethod
+    def from_yaml_text(cls, text: str, *, source: str = "<string>") -> AppConfig:
+        raw: Any = yaml.safe_load(text)
+        if not isinstance(raw, dict):
+            raise ValueError(f"Configuration root must be a mapping: {source}")
+        return cls.model_validate(raw)
+
+    @classmethod
     def from_yaml(cls, path: Path | str) -> AppConfig:
         config_path = Path(path)
-        raw: Any = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict):
-            raise ValueError(f"Configuration root must be a mapping: {config_path}")
-        return cls.model_validate(raw)
+        return cls.from_yaml_text(
+            config_path.read_text(encoding="utf-8"), source=str(config_path)
+        )

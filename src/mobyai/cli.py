@@ -36,6 +36,7 @@ from mobyai.runtime import (
     default_runtime_factory,
     find_config_path,
 )
+from mobyai.setup import SetupError, run_setup
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _CONTINUE_STATES = frozenset(
@@ -64,6 +65,7 @@ def main(
     *,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
+    stdin: TextIO | None = None,
     runtime_factory: RuntimeFactory | None = None,
     runtime: Runtime | None = None,
 ) -> int:
@@ -72,6 +74,7 @@ def main(
             argv,
             stdout=stdout,
             stderr=stderr,
+            stdin=stdin,
             runtime_factory=runtime_factory,
             runtime=runtime,
         )
@@ -83,20 +86,23 @@ async def async_main(
     *,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
+    stdin: TextIO | None = None,
     runtime_factory: RuntimeFactory | None = None,
     runtime: Runtime | None = None,
 ) -> int:
     out = stdout or sys.stdout
     err = stderr or sys.stderr
+    inn = stdin or sys.stdin
     try:
         args = parse_args(argv)
         return await _dispatch(
             args,
             out,
+            inn,
             runtime=runtime,
             runtime_factory=runtime_factory or default_runtime_factory,
         )
-    except CliError as exc:
+    except (CliError, SetupError) as exc:
         print(str(exc), file=err)
         return exc.code
     except KeyboardInterrupt:
@@ -107,7 +113,10 @@ async def async_main(
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="mobyai",
-        description="Local-first agentic software engineering harness.",
+        description=(
+            "Local-first agentic software engineering harness. "
+            "First time: ./scripts/setup.sh   or   python -m mobyai setup"
+        ),
     )
     parser.add_argument("--config", help="Path to YAML configuration")
     parser.add_argument(
@@ -155,16 +164,56 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     config_sub = config.add_subparsers(dest="config_command", required=True)
     config_sub.add_parser("validate", help="Validate the YAML configuration")
 
+    setup = sub.add_parser(
+        "setup",
+        help="Walk through first-time config: paths, mode, models, devices",
+    )
+    setup.add_argument(
+        "--output",
+        "-o",
+        help="Write config here (default: --config or ./config.yaml)",
+    )
+    setup.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Use defaults and flags; do not prompt",
+    )
+    setup.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing config file",
+    )
+    setup.add_argument("--mode", choices=["external", "managed"])
+    setup.add_argument("--workspace", help="project.workspace_root")
+    setup.add_argument("--database", help="persistence.database_path")
+    setup.add_argument("--planner-model")
+    setup.add_argument("--planner-endpoint")
+    setup.add_argument("--planner-device")
+    setup.add_argument("--orchestrator-model")
+    setup.add_argument("--orchestrator-endpoint")
+    setup.add_argument("--orchestrator-device")
+    setup.add_argument("--worker-model")
+    setup.add_argument("--worker-endpoint")
+    setup.add_argument("--worker-device")
+    setup.add_argument(
+        "--no-directories",
+        action="store_true",
+        help="Do not create workspace or database parent directories",
+    )
+
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
 async def _dispatch(
     args: argparse.Namespace,
     stdout: TextIO,
+    stdin: TextIO,
     *,
     runtime: Runtime | None,
     runtime_factory: RuntimeFactory,
 ) -> int:
+    if args.command == "setup":
+        return _cmd_setup(args, stdout, stdin)
     if args.command == "config" and args.config_command == "validate":
         return _config_validate(args, stdout)
     if args.command == "models":
@@ -224,6 +273,30 @@ def _config_validate(args: argparse.Namespace, stdout: TextIO) -> int:
         raise CliError(f"Invalid configuration: {exc}") from exc
     print(f"OK  {path}", file=stdout)
     return 0
+
+
+def _cmd_setup(args: argparse.Namespace, stdout: TextIO, stdin: TextIO) -> int:
+    output = args.output or args.config
+    return run_setup(
+        output=Path(output).expanduser() if output else None,
+        non_interactive=args.non_interactive,
+        force=args.force,
+        mode=args.mode,
+        workspace=args.workspace,
+        database=args.database,
+        planner_model=args.planner_model,
+        planner_endpoint=args.planner_endpoint,
+        planner_device=args.planner_device,
+        orchestrator_model=args.orchestrator_model,
+        orchestrator_endpoint=args.orchestrator_endpoint,
+        orchestrator_device=args.orchestrator_device,
+        worker_model=args.worker_model,
+        worker_endpoint=args.worker_endpoint,
+        worker_device=args.worker_device,
+        create_directories=False if args.no_directories else None,
+        stdin=stdin,
+        stdout=stdout,
+    )
 
 
 async def _cmd_init(
