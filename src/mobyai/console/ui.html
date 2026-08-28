@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>MobyAI console</title>
+  <style>
+    :root {
+      --bg: #10141c;
+      --panel: #18202c;
+      --panel-2: #1e2836;
+      --line: #2a3648;
+      --text: #e7edf5;
+      --muted: #8b9bb0;
+      --accent: #6ea8ff;
+      --fail: #ff6b7a;
+      --ok: #5dcea8;
+      --warn: #e6c07b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.45 ui-sans-serif, system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+    h1 { font-size: 16px; margin: 0; letter-spacing: 0.04em; }
+    nav { display: flex; gap: 8px; }
+    nav button, .btn {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 6px 12px;
+      cursor: pointer;
+    }
+    nav button.active, .btn.primary { border-color: var(--accent); color: var(--accent); }
+    .btn.primary { background: #1a2a44; }
+    main { padding: 20px; max-width: 1400px; margin: 0 auto; }
+    .hint { color: var(--muted); margin: 0 0 16px; }
+    .roles { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px;
+    }
+    .card h2 { margin: 0 0 10px; font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+    label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+    input {
+      width: 100%;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 8px;
+    }
+    .row { display: flex; gap: 12px; align-items: center; margin-top: 16px; }
+    .status { color: var(--muted); }
+    .status.ok { color: var(--ok); }
+    .status.err { color: var(--fail); }
+    .toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+    select {
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 8px;
+      min-width: 220px;
+    }
+    .banner {
+      background: #3a1c22;
+      border: 1px solid var(--fail);
+      color: #ffd0d5;
+      padding: 10px 12px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      white-space: pre-wrap;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+    .chip {
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+    }
+    .chip.failed { border-color: var(--fail); color: var(--fail); }
+    .chip.passed { border-color: var(--ok); color: var(--ok); }
+    .chip.running { border-color: var(--warn); color: var(--warn); }
+    details.step {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      margin-bottom: 10px;
+      overflow: hidden;
+    }
+    details.step.failed { border-color: var(--fail); }
+    summary {
+      cursor: pointer;
+      padding: 10px 12px;
+      list-style: none;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    summary::-webkit-details-marker { display: none; }
+    .badge { font-size: 11px; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; background: var(--panel-2); }
+    .badge.failed { background: #4a1d24; color: var(--fail); }
+    .badge.passed { background: #16362d; color: var(--ok); }
+    pre {
+      margin: 0;
+      padding: 12px;
+      background: var(--bg);
+      color: #d5deea;
+      font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      overflow: auto;
+      max-height: 420px;
+      white-space: pre-wrap;
+      border-top: 1px solid var(--line);
+    }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>MobyAI console</h1>
+    <nav>
+      <button id="tab-settings" class="active" type="button">Settings</button>
+      <button id="tab-monitor" type="button">Monitor</button>
+    </nav>
+    <span id="save-status" class="status"></span>
+  </header>
+  <main>
+    <section id="settings-view">
+      <p class="hint">
+        Temperature, top-p, and top-k apply on the next model call. Endpoint and model id
+        update the live OpenAI-compatible client. Save writes <code>*.overlay.yaml</code>
+        beside the main config (the token never goes here).
+      </p>
+      <div id="roles" class="roles"></div>
+      <div class="row">
+        <button class="btn primary" id="save-settings" type="button">Apply and save</button>
+        <span id="settings-msg" class="status"></span>
+      </div>
+    </section>
+    <section id="monitor-view" class="hidden">
+      <p class="hint">
+        One screen for the whole DAG. Each step is collapsible. Failed steps open with the
+        full event/attempt workflow; other steps show the last 100 lines.
+      </p>
+      <div class="toolbar">
+        <label for="project">Project</label>
+        <select id="project"></select>
+        <button class="btn" id="refresh" type="button">Refresh</button>
+        <label><input id="auto" type="checkbox" checked/> Auto-refresh 2s</label>
+      </div>
+      <div id="fail-banner" class="banner hidden"></div>
+      <div id="chips" class="chips"></div>
+      <div id="steps"></div>
+    </section>
+  </main>
+  <script>
+    const roles = ["planner", "orchestrator", "worker"];
+    let timer = null;
+
+    function $(id) { return document.getElementById(id); }
+
+    function showTab(name) {
+      $("settings-view").classList.toggle("hidden", name !== "settings");
+      $("monitor-view").classList.toggle("hidden", name !== "monitor");
+      $("tab-settings").classList.toggle("active", name === "settings");
+      $("tab-monitor").classList.toggle("active", name === "monitor");
+      if (name === "monitor") loadMonitor();
+    }
+
+    $("tab-settings").onclick = () => showTab("settings");
+    $("tab-monitor").onclick = () => showTab("monitor");
+
+    function roleCard(role, data) {
+      const d = data || {};
+      return `
+        <article class="card" data-role="${role}">
+          <h2>${role}</h2>
+          <label>Endpoint</label>
+          <input data-field="endpoint" value="${esc(d.endpoint || "")}"/>
+          <label>Model id</label>
+          <input data-field="model" value="${esc(d.model || "")}"/>
+          <label>Temperature (${d.temperature ?? 0})</label>
+          <input data-field="temperature" type="number" min="0" max="2" step="0.05" value="${d.temperature ?? 0}"/>
+          <label>Top-p</label>
+          <input data-field="top_p" type="number" min="0" max="1" step="0.01" value="${d.top_p ?? 1}"/>
+          <label>Top-k (blank = engine default)</label>
+          <input data-field="top_k" type="number" min="0" step="1" value="${d.top_k ?? ""}"/>
+        </article>`;
+    }
+
+    function esc(value) {
+      return String(value).replace(/[&<>"']/g, ch => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[ch]));
+    }
+
+    function numOrNull(value) {
+      if (value === "" || value == null) return null;
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    async function loadSettings() {
+      const res = await fetch("/api/settings");
+      const data = await res.json();
+      $("roles").innerHTML = roles.map(role => roleCard(role, data.models[role])).join("");
+    }
+
+    $("save-settings").onclick = async () => {
+      const models = {};
+      document.querySelectorAll(".card[data-role]").forEach(card => {
+        const role = card.getAttribute("data-role");
+        const get = field => card.querySelector(`[data-field="${field}"]`).value;
+        models[role] = {
+          endpoint: get("endpoint"),
+          model: get("model"),
+          temperature: Number(get("temperature")),
+          top_p: numOrNull(get("top_p")),
+          top_k: numOrNull(get("top_k")),
+        };
+      });
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ models }),
+      });
+      const body = await res.json();
+      const msg = $("settings-msg");
+      if (!res.ok) {
+        msg.textContent = body.error || "Save failed";
+        msg.className = "status err";
+        return;
+      }
+      msg.textContent = "Saved overlay " + body.overlay;
+      msg.className = "status ok";
+      await loadSettings();
+    };
+
+    async function loadProjects() {
+      const res = await fetch("/api/projects");
+      const data = await res.json();
+      const select = $("project");
+      const current = select.value;
+      select.innerHTML = (data.projects || []).map(p =>
+        `<option value="${esc(p.project_id)}">${esc(p.name)} (${esc(p.state)})</option>`
+      ).join("");
+      if (current && [...select.options].some(o => o.value === current)) select.value = current;
+    }
+
+    async function loadMonitor() {
+      await loadProjects();
+      const id = $("project").value;
+      if (!id) {
+        $("steps").innerHTML = "<p class='hint'>No projects yet. Run mobyai init / run first.</p>";
+        $("fail-banner").classList.add("hidden");
+        $("chips").innerHTML = "";
+        return;
+      }
+      const res = await fetch("/api/monitor?project=" + encodeURIComponent(id));
+      const data = await res.json();
+      if (!res.ok) {
+        $("steps").innerHTML = `<p class="hint">${esc(data.error || "Failed to load")}</p>`;
+        return;
+      }
+      const failed = data.failed || [];
+      const banner = $("fail-banner");
+      if (failed.length) {
+        banner.classList.remove("hidden");
+        banner.textContent = data.project.last_error
+          ? ("Project error: " + data.project.last_error)
+          : (failed.length + " failed step(s) expanded below with full workflow.");
+      } else {
+        banner.classList.add("hidden");
+      }
+      $("chips").innerHTML = (data.steps || []).map(step => {
+        const kind = step.failed ? "failed" : (step.status === "passed" ? "passed" : (step.status === "running" || step.status === "testing" ? "running" : ""));
+        return `<span class="chip ${kind}">${esc(step.task_id)} ${esc(step.status)}</span>`;
+      }).join("");
+      $("steps").innerHTML = (data.steps || []).map(step => {
+        const open = step.failed ? " open" : "";
+        const body = step.failed ? (step.workflow || step.log_tail || "(no trace)") : (step.log_tail || "(no log yet)");
+        const cls = step.failed ? "step failed" : "step";
+        return `<details class="${cls}"${open}>
+          <summary>
+            <span class="badge ${step.failed ? "failed" : (step.status === "passed" ? "passed" : "")}">${esc(step.status)}</span>
+            <strong>${esc(step.task_id)}</strong>
+            <span>${esc(step.name)}</span>
+            <span class="hint">attempts=${esc(step.attempt_count)}</span>
+          </summary>
+          <pre>${esc(body)}</pre>
+        </details>`;
+      }).join("");
+    }
+
+    $("refresh").onclick = loadMonitor;
+    $("project").onchange = loadMonitor;
+    $("auto").onchange = () => {
+      if (timer) clearInterval(timer);
+      timer = $("auto").checked ? setInterval(() => {
+        if (!$("monitor-view").classList.contains("hidden")) loadMonitor();
+      }, 2000) : null;
+    };
+    $("auto").onchange();
+    loadSettings();
+  </script>
+</body>
+</html>

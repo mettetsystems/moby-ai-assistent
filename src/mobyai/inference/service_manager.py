@@ -16,6 +16,7 @@ import httpx
 
 from mobyai.inference.base import InferenceError
 from mobyai.inference.health import openai_healthcheck
+from mobyai.inference.huggingface import huggingface_environ
 from mobyai.models.config import AgentRole, AppConfig, ServiceMode
 from mobyai.models.inference import GpuServiceMode, InferenceEndpoint
 
@@ -217,7 +218,7 @@ class GpuServiceManager:
         argv = render_launch(self._config, role)
         if not argv:
             raise ProcessSpawnError(f"{role.value} has no launch argv")
-        env = _launch_env(self._device(role))
+        env = _launch_env(self._device(role), extra=huggingface_environ(self._config))
         handle = self._spawner.spawn(argv, env=env)
         self._processes[role] = handle
 
@@ -337,12 +338,17 @@ def service_manager_from_config(
     )
 
 
-def _launch_env(device: int | str | None) -> dict[str, str]:
+def _launch_env(
+    device: int | str | None,
+    extra: Mapping[str, str] | None = None,
+) -> dict[str, str]:
     env = os.environ.copy()
     if device is None or _is_cpu(device):
         env["CUDA_VISIBLE_DEVICES"] = ""
     else:
         env["CUDA_VISIBLE_DEVICES"] = str(device)
+    if extra:
+        env.update(extra)
     return env
 
 

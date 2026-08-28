@@ -18,7 +18,7 @@ From the repository root, run the script. It pauses after each step:
 ./scripts/setup.sh
 ```
 
-That script finds Python 3.12+, creates `.venv`, installs `mobyai`, then runs `mobyai setup` so you can set workspace, database, service mode, model ids, endpoints, and GPU devices.
+That script finds Python 3.12+, creates `.venv`, installs `mobyai`, then runs `mobyai setup`. Press Enter to keep the defaults: Hugging Face token file, managed vLLM on two GPUs, and the reference Qwen models. Type anything else to override a field.
 
 Non-interactive:
 
@@ -52,12 +52,13 @@ Then `source .venv/bin/activate` in every new shell.
 ## Prerequisites
 
 - Python 3.12+
-- Local OpenAI-compatible inference servers before a live `run` (default `services.mode: external`)
+- Local OpenAI-compatible inference servers before a live `run`, **or** the default managed vLLM deployment
+- Optional Hugging Face token (`HF_TOKEN` or `~/MobyAI/secrets/hf_token`) for gated Hub repos
 - Optional NVIDIA GPUs for managed-process mode; unit and integration tests do not require GPUs
 
 ## Configuration
 
-`mobyai setup` writes a commented `config.yaml`. You can also copy [`config/default.yaml`](config/default.yaml) and replace every `configurable-*-model` id with a value from `GET /v1/models`.
+`mobyai setup` writes a commented `config.yaml` with reference Hugging Face models. Press Enter to keep them, or pass `--planner-model` / `--orchestrator-model` / `--worker-model`. The Hub token is stored in `~/MobyAI/secrets/hf_token`, not in YAML.
 
 `--config PATH` overrides the search order: `MOBYAI_CONFIG`, `./config.yaml`, `./config/default.yaml`, `~/MobyAI/config.yaml`.
 
@@ -70,7 +71,7 @@ mobyai --config ./config.yaml models
 
 ## Starting inference servers
 
-External mode (default) expects Planner, Orchestrator, and Worker OpenAI-compatible servers already listening on the configured ports. Check them with:
+External mode (`mobyai setup --preset external`) expects Planner, Orchestrator, and Worker OpenAI-compatible servers already listening on the configured ports. The **setup default** is managed vLLM.
 
 ```bash
 mobyai --config ./config.yaml doctor
@@ -78,6 +79,14 @@ mobyai --config ./config.yaml start
 ```
 
 Managed mode (`config/examples/managed.yaml`, or `mobyai setup --mode managed`) lets MobyAI spawn isolated processes with `CUDA_VISIBLE_DEVICES` from `hardware`. Planner and Worker that share a device are swapped; they are not loaded at the same time.
+
+## Operator console
+
+```bash
+mobyai --config ./config.yaml ui
+```
+
+Opens a local page (default `http://127.0.0.1:8743`) with **Settings** (temperature, top-p, top-k, model ids, endpoints) and **Monitor** (collapsible DAG steps, last 100 log lines, failed steps expanded with the full event/attempt workflow). Apply writes `config.overlay.yaml` beside the main YAML.
 
 ## Creating and running a project
 

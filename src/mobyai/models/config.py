@@ -34,6 +34,14 @@ class InferenceParams(_StrictModel):
     max_num_seqs: int | None = None
 
 
+class SamplingConfig(_StrictModel):
+    """Decoding knobs. Operators may change these live from the console UI."""
+
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=1.0, ge=0.0, le=1.0)
+    top_k: int | None = Field(default=None, ge=0)
+
+
 class RoleModelConfig(_StrictModel):
     provider: str = "openai_compatible"
     engine: str | None = None
@@ -43,6 +51,7 @@ class RoleModelConfig(_StrictModel):
     quantization: str | None = None
     kv_cache_dtype: str | None = None
     inference: InferenceParams | None = None
+    sampling: SamplingConfig = Field(default_factory=SamplingConfig)
     launch: list[str] = Field(default_factory=list)
 
 
@@ -120,6 +129,34 @@ class PersistenceConfig(_StrictModel):
         return Path(str(value)).expanduser()
 
 
+class HuggingFaceConfig(_StrictModel):
+    """Where the operator token lives. Never store the token string in YAML."""
+
+    token_file: Path | None = None
+
+    @field_validator("token_file", mode="before")
+    @classmethod
+    def expand_token_file(cls, value: Path | str | None) -> Path | None:
+        if value is None or str(value).strip() == "":
+            return None
+        return Path(str(value)).expanduser()
+
+
+def overlay_path_for(config_path: Path | str) -> Path:
+    path = Path(config_path)
+    return path.with_name(f"{path.stem}.overlay.yaml")
+
+
+def merge_config_dicts(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = merge_config_dicts(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 class AppConfig(_StrictModel):
     project: ProjectSettings
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
@@ -128,6 +165,7 @@ class AppConfig(_StrictModel):
     services: InferenceServicesConfig = Field(default_factory=InferenceServicesConfig)
     models: ModelsConfig
     hardware: HardwareConfig | None = None
+    huggingface: HuggingFaceConfig = Field(default_factory=HuggingFaceConfig)
 
     @classmethod
     def from_yaml_text(cls, text: str, *, source: str = "<string>") -> AppConfig:
@@ -139,6 +177,13 @@ class AppConfig(_StrictModel):
     @classmethod
     def from_yaml(cls, path: Path | str) -> AppConfig:
         config_path = Path(path)
-        return cls.from_yaml_text(
-            config_path.read_text(encoding="utf-8"), source=str(config_path)
-        )
+        raw: Any = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError(f"Configuration root must be a mapping: {config_path}")
+        overlay_file = overlay_path_for(config_path)
+        if overlay_file.is_file():
+            overlay = yaml.safe_load(overlay_file.read_text(encoding="utf-8")) or {}
+            if not isinstance(overlay, dict):
+                raise ValueError(f"Overlay root must be a mapping: {overlay_file}")
+            raw = merge_config_dicts(raw, overlay)
+        return cls.model_validate(raw)

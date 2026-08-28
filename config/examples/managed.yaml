@@ -27,6 +27,9 @@ context:
 persistence:
   database_path: ~/MobyAI/mobyai.db
 
+huggingface:
+  token_file: ~/MobyAI/secrets/hf_token
+
 services:
   mode: managed
   health_timeout_seconds: 60
@@ -46,7 +49,7 @@ models:
   planner:
     provider: openai_compatible
     engine: vllm
-    model: configurable-planner-model
+    model: Qwen/Qwen3-32B
     gpu: 0
     endpoint: http://127.0.0.1:9802
     quantization: q4
@@ -60,7 +63,7 @@ models:
   orchestrator:
     provider: openai_compatible
     engine: configurable
-    model: configurable-small-model
+    model: Qwen/Qwen2.5-7B-Instruct
     gpu: 1
     endpoint: http://127.0.0.1:9801
     launch:
@@ -72,7 +75,7 @@ models:
   worker:
     provider: openai_compatible
     engine: vllm
-    model: configurable-coding-model
+    model: Qwen/Qwen3.5-35B-A3B
     gpu: 0
     endpoint: http://127.0.0.1:9800
     launch:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -12,6 +13,7 @@ from mobyai.inference.base import (
     SchemaRepairExhaustedError,
     StructuredOutputError,
 )
+from mobyai.models.config import RoleModelConfig
 from mobyai.models.inference import ChatMessage, ModelRequest
 
 T = TypeVar("T", bound=BaseModel)
@@ -62,15 +64,20 @@ class StructuredGenerator:
         provider: InferenceProvider,
         *,
         max_repair_attempts: int = 2,
+        settings: RoleModelConfig | None = None,
+        refresh: Callable[[], None] | None = None,
     ) -> None:
         self.provider = provider
         self.max_repair_attempts = max(max_repair_attempts, 0)
+        self.settings = settings
+        self._refresh = refresh
 
     async def generate(
         self,
         request: ModelRequest,
         schema: type[T],
     ) -> T:
+        request = self._with_live_settings(request)
         response = await self.provider.generate(request)
         try:
             return parse_structured(response.content, schema)
@@ -96,7 +103,9 @@ class StructuredGenerator:
                     content=_REPAIR_INSTRUCTION.format(errors=str(last_error)),
                 ),
             ]
-            repaired_request = request.model_copy(update={"messages": messages})
+            repaired_request = self._with_live_settings(
+                request.model_copy(update={"messages": messages})
+            )
             response = await self.provider.generate(repaired_request)
             last_raw = response.content
             try:
@@ -108,6 +117,26 @@ class StructuredGenerator:
             raw=last_raw,
             attempts=self.max_repair_attempts,
         ) from last_error
+
+    def _with_live_settings(self, request: ModelRequest) -> ModelRequest:
+        if self._refresh is not None:
+            self._refresh()
+        if self.settings is None:
+            return request
+        sampling = self.settings.sampling
+        provider = self.provider
+        endpoint = getattr(provider, "endpoint", None)
+        if isinstance(endpoint, str):
+            provider.endpoint = self.settings.endpoint.rstrip("/")
+        if hasattr(provider, "model"):
+            provider.model = self.settings.model
+        return request.model_copy(
+            update={
+                "temperature": sampling.temperature,
+                "top_p": sampling.top_p,
+                "top_k": sampling.top_k,
+            }
+        )
 
 
 def _strip_fences(text: str) -> str:

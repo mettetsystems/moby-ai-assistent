@@ -9,6 +9,7 @@ from pathlib import Path
 from mobyai.agents.orchestrator import OrchestratorAgent
 from mobyai.agents.planner import PlannerAgent
 from mobyai.agents.worker import WorkerAgent
+from mobyai.console.settings import OverlayWatcher
 from mobyai.execution.workspace import Workspace
 from mobyai.inference.factory import InferenceRegistry
 from mobyai.inference.service_manager import (
@@ -17,7 +18,7 @@ from mobyai.inference.service_manager import (
     service_manager_from_config,
 )
 from mobyai.inference.structured import StructuredGenerator
-from mobyai.models.config import AgentRole, AppConfig
+from mobyai.models.config import AgentRole, AppConfig, overlay_path_for
 from mobyai.models.project import Project
 from mobyai.state.repository import StateStore
 from mobyai.state.sqlite import SqliteStateStore
@@ -52,22 +53,41 @@ class Runtime:
         store = SqliteStateStore(config.persistence.database_path)
         registry = InferenceRegistry.from_config(config)
         repairs = config.runtime.max_schema_repair_attempts
+        overlay: Path | None
+        try:
+            overlay = overlay_path_for(find_config_path())
+        except FileNotFoundError:
+            overlay = None
+        watcher = OverlayWatcher(overlay, config)
+
+        def refresh() -> None:
+            watcher.maybe_reload()
+
         return cls(
             config,
             store,
             PlannerAgent(
                 StructuredGenerator(
-                    registry.get(AgentRole.PLANNER), max_repair_attempts=repairs
+                    registry.get(AgentRole.PLANNER),
+                    max_repair_attempts=repairs,
+                    settings=config.models.planner,
+                    refresh=refresh,
                 )
             ),
             OrchestratorAgent(
                 StructuredGenerator(
-                    registry.get(AgentRole.ORCHESTRATOR), max_repair_attempts=repairs
+                    registry.get(AgentRole.ORCHESTRATOR),
+                    max_repair_attempts=repairs,
+                    settings=config.models.orchestrator,
+                    refresh=refresh,
                 )
             ),
             WorkerAgent(
                 StructuredGenerator(
-                    registry.get(AgentRole.WORKER), max_repair_attempts=repairs
+                    registry.get(AgentRole.WORKER),
+                    max_repair_attempts=repairs,
+                    settings=config.models.worker,
+                    refresh=refresh,
                 )
             ),
             service_manager_from_config(config),

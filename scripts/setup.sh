@@ -21,7 +21,7 @@ Walks through, in order:
   2. Find Python 3.12 or newer
   3. Create .venv (unless SKIP or already active)
   4. pip install -e ".[dev]"
-  5. Run `mobyai setup` (config wizard)
+  5. Run `mobyai setup` (HF token, default models, runtime preset; custom values still accepted)
   6. Print the remaining operator steps (servers, doctor, first project)
 
 Usage:
@@ -40,7 +40,11 @@ Options (this script):
 Options forwarded to `mobyai setup`:
   --output PATH
   --force
+  --preset default|external|custom
   --mode external|managed
+  --hf-token TOKEN
+  --hf-token-file PATH
+  --skip-hf-token
   --workspace PATH
   --database PATH
   --planner-model ID
@@ -117,7 +121,7 @@ while [[ $# -gt 0 ]]; do
       SETUP_ARGS+=("$@")
       break
       ;;
-    --output|--mode|--workspace|--database|--planner-model|--planner-endpoint|--planner-device|--orchestrator-model|--orchestrator-endpoint|--orchestrator-device|--worker-model|--worker-endpoint|--worker-device)
+    --output|--mode|--preset|--workspace|--database|--hf-token|--hf-token-file|--planner-model|--planner-endpoint|--planner-device|--orchestrator-model|--orchestrator-endpoint|--orchestrator-device|--worker-model|--worker-endpoint|--worker-device)
       SETUP_ARGS+=("$1")
       if [[ $# -lt 2 ]]; then
         log "Option $1 requires a value"
@@ -126,7 +130,7 @@ while [[ $# -gt 0 ]]; do
       SETUP_ARGS+=("$2")
       shift 2
       ;;
-    --force|--no-directories)
+    --force|--no-directories|--skip-hf-token)
       SETUP_ARGS+=("$1")
       shift
       ;;
@@ -140,7 +144,7 @@ done
 
 log "MobyAI setup walkthrough"
 log "Repository: $REPO_ROOT"
-log "This does not download weights or start inference servers."
+log "This writes config and an optional Hugging Face token file. It does not start GPUs."
 log "Full written form of these steps: docs/setup.md"
 pause
 
@@ -210,10 +214,12 @@ if [[ "$SKIP_INSTALL" -eq 1 ]]; then
 fi
 
 step "5/6  Write YAML config (mobyai setup)"
-log "The wizard asks for workspace, database, service mode, and per-role model/endpoint/device."
-log "Placeholder model ids are expected until you paste the ids from GET /v1/models."
+log "Defaults: Hugging Face token -> ~/MobyAI/secrets/hf_token"
+log "          managed vLLM, GPU 0 planner+worker, GPU 1 orchestrator"
+log "          Qwen/Qwen3-32B, Qwen/Qwen2.5-7B-Instruct, Qwen/Qwen3.5-35B-A3B"
+log "Press Enter to keep a default, or type a custom model / endpoint / device."
 if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
-  log "Non-interactive: defaults plus any flags you passed."
+  log "Non-interactive: those defaults plus any flags you passed."
 fi
 pause
 "$VENV_PY" -m mobyai setup "${SETUP_ARGS[@]+"${SETUP_ARGS[@]}"}"
@@ -224,14 +230,15 @@ Activate the venv in new shells:
   source $REPO_ROOT/.venv/bin/activate
 
 Then:
-  1. Edit the config the wizard wrote (model ids are placeholders unless you overrode them).
-  2. mobyai --config PATH config validate
-  3. If services.mode is external, start three OpenAI-compatible servers on the configured ports.
-     If managed, put the launch binary (default: vllm) on PATH.
-  4. mobyai --config PATH doctor
-  5. mobyai --config PATH start
-  6. mobyai --config PATH init --name demo --objective "Create a small REST API with an SQLite-backed task manager."
-  7. mobyai --config PATH run demo
+  1. Review the config (reference models are already filled in; override any field).
+  2. If you skipped the Hugging Face token, export HF_TOKEN or write ~/MobyAI/secrets/hf_token
+  3. mobyai --config PATH config validate
+  4. If services.mode is external, start three OpenAI-compatible servers on the configured ports.
+     If managed, put vLLM on PATH; first start pulls weights using the token file.
+  5. mobyai --config PATH doctor
+  6. mobyai --config PATH start
+  7. mobyai --config PATH init --name demo --objective "Create a small REST API with an SQLite-backed task manager."
+  8. mobyai --config PATH run demo
 
 Tests (no GPU required):
   pytest tests/unit tests/integration

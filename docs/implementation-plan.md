@@ -204,7 +204,7 @@ GPUs are never required for the default unit suite. Inference is mocked from Pha
 | Worker | Tool dispatch through the jail, chat-dump ignored, path escape, harness tests vs `done` |
 | Recovery | Fail #1 retry, fail #2 escalate (Phase 8); DAG-branch replan (Phase 9) |
 | GPU services | External healthcheck; managed spawn with config `CUDA_VISIBLE_DEVICES`; same-device swap (Phase 10) |
-| CLI | init/setup/doctor/start/run/status/pause/resume/stop/tasks/logs/models/config validate (Phase 11; setup walkthrough after Phase 12) |
+| CLI | init/setup/ui/doctor/start/run/status/pause/resume/stop/tasks/logs/models/config validate |
 | End-to-end | Fixture REST+SQLite task manager: plan, fail/retry/escalate, DAG patch, SQLite reconnect, CLI run (Phase 12) |
 
 Each phase runs its new tests, then the broader unit suite, before the next phase starts.
@@ -253,7 +253,7 @@ Phase 11 delivered: `mobyai` CLI (`python -m mobyai` / console script) with `ini
 
 Phase 12 delivered: fixture objective “Create a small REST API with an SQLite-backed task manager.” Scripted Planner/Worker/Orchestrator payloads in `tests/fixtures/task_manager/` drive `tests/integration/test_task_manager.py` through planning, Worker execution, harness tests, fail #1 retry, fail #2 escalate, DAG patch, continuation, and COMPLETED. SQLite reconnect after the first passed task continues without reconstructing history from chat. A CLI `init`/`run` path covers the same fixture. No GPU required.
 
-Operator setup (post-MVP): `./scripts/setup.sh` walks Python 3.12+, `.venv`, `pip install -e ".[dev]"`, then `mobyai setup`. The wizard writes a commented YAML (paths, `external` vs `managed`, per-role model/endpoint/device) and does not download weights. `docs/setup.md` is the same sequence written for a human.
+Operator setup (post-MVP): `./scripts/setup.sh` walks Python 3.12+, `.venv`, `pip install -e ".[dev]"`, then `mobyai setup`. Defaults are a Hugging Face token file, managed vLLM on two GPUs, and reference Qwen model ids; every prompt still accepts a custom value. `docs/setup.md` is the same sequence written for a human.
 
 ---
 

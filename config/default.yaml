@@ -2,8 +2,8 @@
 # Field-by-field operator guide: docs/setup.md
 # First-run wizard: ./scripts/setup.sh   or   python -m mobyai setup
 #
-# Copy this file, replace configurable-*-model with ids from GET /v1/models,
-# then: mobyai --config PATH config validate
+# Copy this file, or run ./scripts/setup.sh and press Enter to keep the
+# reference Hugging Face models. Override any field; ids must match GET /v1/models.
 #
 # services.mode: external means you start the three HTTP servers. MobyAI only
 # healthchecks them. Use config/examples/managed.yaml to spawn processes instead.
@@ -31,6 +31,11 @@ persistence:
   # Crash recovery. mobyai resume reloads this file, not a chat transcript.
   database_path: ~/MobyAI/mobyai.db
 
+huggingface:
+  # Gated Hub downloads. Never put the token string in this file.
+  # Setup writes it to token_file (mode 0600). Override with HF_TOKEN.
+  token_file: ~/MobyAI/secrets/hf_token
+
 services:
   mode: external
   health_timeout_seconds: 60
@@ -51,21 +56,27 @@ models:
   planner:
     provider: openai_compatible
     engine: vllm
-    model: configurable-planner-model
+    model: Qwen/Qwen3-32B
     gpu: 0
     endpoint: http://127.0.0.1:9802
     quantization: q4
     kv_cache_dtype: fp8
+    sampling:
+      temperature: 0.0
+      top_p: 1.0
   orchestrator:
     provider: openai_compatible
     engine: configurable
-    model: configurable-small-model
+    model: Qwen/Qwen2.5-7B-Instruct
     gpu: 1
     endpoint: http://127.0.0.1:9801
+    sampling:
+      temperature: 0.0
+      top_p: 1.0
   worker:
     provider: openai_compatible
     engine: vllm
-    model: configurable-coding-model
+    model: Qwen/Qwen3.5-35B-A3B
     gpu: 0
     endpoint: http://127.0.0.1:9800
     inference:
@@ -75,3 +86,6 @@ models:
       gpu_memory_utilization: 0.92
       enable_chunked_prefill: true
       max_num_seqs: 16
+    sampling:
+      temperature: 0.0
+      top_p: 1.0

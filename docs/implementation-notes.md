@@ -420,7 +420,7 @@ Design record for major subsystems. Each section covers what it does, why it exi
 
 ### First-run setup (`src/mobyai/setup.py`, `scripts/setup.sh`)
 
-**What it does.** `scripts/setup.sh` checks Python 3.12+, creates `.venv`, installs the package, then runs `mobyai setup`. The wizard writes a commented `config.yaml` (workspace, SQLite path, `external` vs `managed`, per-role model/endpoint/device) and optionally creates directories. `--non-interactive` uses defaults plus flags. It does not download weights or start servers.
+**What it does.** `scripts/setup.sh` checks Python 3.12+, creates `.venv`, installs the package, then runs `mobyai setup`. The wizard prompts for a Hugging Face token (stored at `~/MobyAI/secrets/hf_token`, never in YAML), then a runtime preset (`default` = managed dual-GPU vLLM with reference Qwen models). Every field still accepts a custom value or a CLI flag. `--non-interactive` uses those defaults plus flags. It does not download weights or start servers until `mobyai start`.
 
 **Why it exists.** Copying `default.yaml` and guessing search order is how first runs fail. The operator needs one explicit path from clone to `doctor`.
 
@@ -429,6 +429,18 @@ Design record for major subsystems. Each section covers what it does, why it exi
 **Alternatives considered.** Only documenting commands in the README (easy to skip a step); generating config from environment variables (hostile for three model endpoints); installing vLLM inside the same venv by default (the harness must not depend on an engine SDK).
 
 **How to replace.** Keep `run_setup` as the writer. Change prompt copy in `setup.py` and the pause text in `scripts/setup.sh` together with `docs/setup.md`.
+
+### Operator console (`src/mobyai/console/`)
+
+**What it does.** `mobyai ui` serves Settings (temperature, top-p, top-k, endpoints, model ids) and Monitor (collapsible DAG steps). Failed steps open with the full event/attempt workflow; other steps show the last 100 lines. Saves go to `*.overlay.yaml`. A running harness reloads the overlay on the next generate.
+
+**Why it exists.** Human-in-the-loop decoding and endpoint changes must not require editing YAML by hand or asking a model for the current task.
+
+**Why this design.** stdlib HTTP + one HTML file. Overlay file preserves comments in the main config. Sampling is applied in `StructuredGenerator` so agents stay unaware of the UI.
+
+**Alternatives considered.** FastAPI/Streamlit (extra deps); rewriting `config.yaml` (destroys comments); sampling only on `ModelRequest` at agent call sites (three copies).
+
+**How to replace.** Keep `ConsoleService` as the JSON surface. Swap `ui.html` without changing overlay merge.
 
 ---
 

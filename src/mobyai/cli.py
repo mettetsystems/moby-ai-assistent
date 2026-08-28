@@ -7,6 +7,7 @@ import asyncio
 import re
 import shutil
 import sys
+import webbrowser
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,11 +16,13 @@ from typing import TextIO
 from pydantic import ValidationError
 
 from mobyai import __version__
+from mobyai.console.server import ConsoleService, serve_console
 from mobyai.dag.graph import TaskGraph
 from mobyai.engine.orchestration import OrchestrationError, run_project
 from mobyai.engine.planning import PlanningError, plan_project
 from mobyai.engine.recovery import ProjectNotFoundError, resume_project
 from mobyai.engine.state_machine import InvalidTransitionError, ProjectStateMachine
+from mobyai.inference.huggingface import resolve_huggingface_token, token_from_file
 from mobyai.inference.service_manager import (
     RoleUnhealthyError,
     ServiceManagerError,
@@ -160,6 +163,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     sub.add_parser("models", help="Show configured models and devices")
 
+    ui = sub.add_parser("ui", help="Settings and monitor console in the browser")
+    ui.add_argument("--host", default="127.0.0.1")
+    ui.add_argument("--port", type=int, default=8743)
+    ui.add_argument("--no-browser", action="store_true")
+
     config = sub.add_parser("config", help="Configuration helpers")
     config_sub = config.add_subparsers(dest="config_command", required=True)
     config_sub.add_parser("validate", help="Validate the YAML configuration")
@@ -184,8 +192,26 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Overwrite an existing config file",
     )
     setup.add_argument("--mode", choices=["external", "managed"])
+    setup.add_argument(
+        "--preset",
+        choices=["default", "external", "custom"],
+        help="default=managed dual-GPU reference models; still overridable per field",
+    )
     setup.add_argument("--workspace", help="project.workspace_root")
     setup.add_argument("--database", help="persistence.database_path")
+    setup.add_argument(
+        "--hf-token",
+        help="Hugging Face token (prefer the prompt or HF_TOKEN; argv is visible in ps)",
+    )
+    setup.add_argument(
+        "--hf-token-file",
+        help="Where to store the token (default: ~/MobyAI/secrets/hf_token)",
+    )
+    setup.add_argument(
+        "--skip-hf-token",
+        action="store_true",
+        help="Do not prompt for or write a Hugging Face token",
+    )
     setup.add_argument("--planner-model")
     setup.add_argument("--planner-endpoint")
     setup.add_argument("--planner-device")
@@ -244,6 +270,14 @@ async def _dispatch(
             "logs": lambda: _cmd_logs(
                 session, args.project, stdout, task_id=args.task, limit=args.limit
             ),
+            "ui": lambda: _cmd_ui(
+                session,
+                stdout,
+                config_path=find_config_path(args.config),
+                host=args.host,
+                port=args.port,
+                no_browser=args.no_browser,
+            ),
         }
         handler = handlers.get(args.command)
         if handler is None:
@@ -294,6 +328,10 @@ def _cmd_setup(args: argparse.Namespace, stdout: TextIO, stdin: TextIO) -> int:
         worker_endpoint=args.worker_endpoint,
         worker_device=args.worker_device,
         create_directories=False if args.no_directories else None,
+        hf_token=args.hf_token,
+        hf_token_file=args.hf_token_file,
+        skip_hf_token=args.skip_hf_token,
+        preset=args.preset,
         stdin=stdin,
         stdout=stdout,
     )
@@ -445,6 +483,15 @@ async def _cmd_doctor(runtime: Runtime, stdout: TextIO) -> int:
         if managed:
             failed = True
 
+    token = resolve_huggingface_token(config)
+    token_file = config.huggingface.token_file
+    if token:
+        source = "HF_TOKEN" if not token_from_file(token_file) else str(token_file)
+        report(True, "hf token", source)
+    else:
+        detail = str(token_file) if token_file else "set HF_TOKEN or huggingface.token_file"
+        print(f"{'hf token':<18} warn  not found ({detail})", file=stdout)
+
     for role in AgentRole:
         launch = config.models.for_role(role).launch
         if not launch:
@@ -479,6 +526,38 @@ async def _cmd_start(runtime: Runtime, stdout: TextIO) -> int:
             "planner/worker start on demand during run (shared-device swap).",
             file=stdout,
         )
+    return 0
+
+
+async def _cmd_ui(
+    runtime: Runtime,
+    stdout: TextIO,
+    *,
+    config_path: Path,
+    host: str,
+    port: int,
+    no_browser: bool,
+) -> int:
+    loop = asyncio.get_running_loop()
+
+    def caller(coro):
+        return asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=60)
+
+    service = ConsoleService(runtime, config_path, caller)
+    server = serve_console(service, host=host, port=port)
+    bound_host, bound_port = server.server_address[:2]
+    browse_host = "127.0.0.1" if bound_host in {"0.0.0.0", "::"} else bound_host
+    url = f"http://{browse_host}:{bound_port}/"
+    print(f"console  {url}", file=stdout)
+    print("Settings: temperature, top-p, top-k, endpoints. Monitor: last 100 lines per step.", file=stdout)
+    stdout.flush()
+    if not no_browser:
+        webbrowser.open(url)
+    stop = asyncio.Event()
+    try:
+        await stop.wait()
+    finally:
+        server.shutdown()
     return 0
 
 

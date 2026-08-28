@@ -21,6 +21,9 @@ def test_default_yaml_loads() -> None:
     assert config.hardware.for_role(AgentRole.ORCHESTRATOR).device == 1
     assert config.models.for_role(AgentRole.WORKER).gpu == 0
     assert config.persistence.database_path == Path.home() / "MobyAI" / "mobyai.db"
+    assert config.models.planner.model == "Qwen/Qwen3-32B"
+    assert config.models.worker.model == "Qwen/Qwen3.5-35B-A3B"
+    assert config.huggingface.token_file == Path.home() / "MobyAI" / "secrets" / "hf_token"
 
 
 def test_dual_gpu_example_loads() -> None:
@@ -66,3 +69,12 @@ def test_missing_required_model_is_rejected(tmp_path: Path) -> None:
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
     with pytest.raises(ValidationError):
         AppConfig.from_yaml(path)
+
+
+def test_omitted_huggingface_is_optional(tmp_path: Path) -> None:
+    payload = yaml.safe_load(DEFAULT_CONFIG.read_text(encoding="utf-8"))
+    del payload["huggingface"]
+    path = tmp_path / "no-hf.yaml"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    config = AppConfig.from_yaml(path)
+    assert config.huggingface.token_file is None

@@ -248,6 +248,27 @@ async def test_cpu_device_clears_cuda_visible_devices() -> None:
     await manager.aclose()
 
 
+async def test_managed_injects_hf_token_from_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    token_path = tmp_path / "hf_token"
+    token_path.write_text("hf_from_file\n", encoding="utf-8")
+    data = _managed_payload()
+    data["huggingface"] = {"token_file": str(token_path)}
+    config = AppConfig.model_validate(data)
+    spawner = RecordingSpawner()
+    manager = GpuServiceManager(
+        config, spawner=spawner, health=lambda _role: True
+    )
+    await manager.ensure_role_available(AgentRole.PLANNER)
+    env = spawner.starts[0]["env"]
+    assert env["HF_TOKEN"] == "hf_from_file"
+    assert env["HUGGING_FACE_HUB_TOKEN"] == "hf_from_file"
+    await manager.aclose()
+
+
 async def test_managed_empty_launch_is_external() -> None:
     data = _managed_payload()
     data["models"]["worker"]["launch"] = []

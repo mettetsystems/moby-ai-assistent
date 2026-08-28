@@ -21,7 +21,9 @@ class ModelRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     messages: list[ChatMessage] = Field(min_length=1)
-    temperature: float = Field(default=0.0, ge=0.0)
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    top_k: int | None = Field(default=None, ge=0)
     max_tokens: int | None = Field(default=None, ge=1)
     json_mode: bool = True
 

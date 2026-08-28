@@ -36,6 +36,10 @@ class OpenAICompatibleProvider:
             "messages": [message.model_dump() for message in request.messages],
             "temperature": request.temperature,
         }
+        if request.top_p is not None:
+            payload["top_p"] = request.top_p
+        if request.top_k is not None:
+            payload["top_k"] = request.top_k
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
         if request.json_mode:

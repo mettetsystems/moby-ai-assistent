@@ -5,10 +5,11 @@ This is the operator walkthrough. Do these steps in order. The same sequence is 
 MobyAI is not a chat app. After setup you will have:
 
 1. A Python package (`mobyai`) on your PATH.
-2. A YAML file that names **where state lives** and **which OpenAI-compatible URLs** the Planner, Orchestrator, and Worker use.
-3. Empty directories for project workspaces.
+2. A YAML file with **default models and a default runtime deployment** (managed vLLM, dual GPU). You can override any field.
+3. A Hugging Face token file at `~/MobyAI/secrets/hf_token` (mode 0600) if you pasted a token. The token is **not** stored in YAML.
+4. Empty directories for project workspaces.
 
-The harness will **not** download weights, pick GPUs for you, or invent model ids. Those stay in the YAML.
+The harness will **not** download weights until `mobyai start` / your own servers. Press Enter at each prompt to keep the default, or type a custom value.
 
 ---
 
@@ -19,12 +20,13 @@ Required:
 - A checkout of this repository
 - **Python 3.12 or newer** (`python3 --version`)
 - `pip` (comes with the venv the script creates)
-- Disk write access for the workspace root and the SQLite path (defaults under `~/MobyAI/`)
+- Disk write access for the workspace root, SQLite path, and `~/MobyAI/secrets/` (defaults under `~/MobyAI/`)
+- Optional: a Hugging Face token (`HF_TOKEN` or pasted during setup) for gated Hub repos
 
 Required later, before `mobyai run` against real models:
 
-- Three OpenAI-compatible HTTP servers (Planner, Orchestrator, Worker), **or** a launchable engine on PATH if you choose `services.mode: managed`
-- Model ids that those servers actually serve (`GET /v1/models`)
+- Three OpenAI-compatible HTTP servers (Planner, Orchestrator, Worker), **or** vLLM on PATH if you keep the default `managed` deployment
+- Model ids that those servers actually serve (`GET /v1/models`). Setup fills reference Qwen ids; override them if you serve something else.
 
 Not required for install or for `pytest`:
 
@@ -53,13 +55,32 @@ The script pauses after each step so you can read what it is about to do. It wil
 | 2 | Finds Python ≥ 3.12 on PATH | Install Python if it exits |
 | 3 | Creates or reuses `./.venv` | Nothing unless `.venv` is the wrong version |
 | 4 | `pip install -e ".[dev]"` into that venv | Wait |
-| 5 | Runs `python -m mobyai setup` | Answer prompts (or accept `[defaults]`) |
-| 6 | Prints doctor / first-project commands | Start servers, then run those commands |
+| 5 | Runs `python -m mobyai setup` | Hugging Face token (or Enter to skip), then Enter to keep default models/devices or type custom ones |
+| 6 | Prints doctor / first-project commands | `doctor` / `start` / first project |
+
+Reference defaults (still overridable):
+
+| Role | Hugging Face id | Endpoint | GPU |
+|------|-----------------|----------|-----|
+| Planner | `Qwen/Qwen3-32B` | `http://127.0.0.1:9802` | 0 |
+| Orchestrator | `Qwen/Qwen2.5-7B-Instruct` | `http://127.0.0.1:9801` | 1 |
+| Worker | `Qwen/Qwen3.5-35B-A3B` | `http://127.0.0.1:9800` | 0 |
+
+Runtime preset `default` is **managed** vLLM (MobyAI spawns processes). `external` uses the same models but you start the servers. `custom` asks for mode first.
 
 Non-interactive (CI or “just write a default config.yaml here”):
 
 ```bash
-./scripts/setup.sh --yes --output ./config.yaml --force
+./scripts/setup.sh --yes --output ./config.yaml --force --skip-hf-token
+```
+
+With a token (prefer the prompt; argv is visible in `ps`):
+
+```bash
+./scripts/setup.sh --yes --output ./config.yaml --force --hf-token-file ~/MobyAI/secrets/hf_token
+# then paste the token when prompted, or:
+export HF_TOKEN=hf_...
+./scripts/setup.sh --yes --force
 ```
 
 Useful flags:
@@ -109,30 +130,29 @@ python -m mobyai --version
 
 Either copy a template and edit it, or use the wizard.
 
-**Wizard (prompts for every role):**
+**Wizard (Enter keeps defaults; type to override):**
 
 ```bash
 mobyai setup
-# writes ./config.yaml unless you pass --output PATH
+# Hugging Face token -> ~/MobyAI/secrets/hf_token
+# preset default = managed dual-GPU + reference Qwen models
 ```
 
 **Wizard, no prompts:**
 
 ```bash
 mobyai setup --non-interactive --output ./config.yaml --force \
-  --mode external \
+  --preset default \
+  --hf-token-file ~/MobyAI/secrets/hf_token \
+  --skip-hf-token \
   --workspace ~/MobyAI/projects \
   --database ~/MobyAI/mobyai.db \
-  --planner-model YOUR_PLANNER_ID \
-  --planner-endpoint http://127.0.0.1:9802 \
-  --planner-device 0 \
-  --orchestrator-model YOUR_ORCHESTRATOR_ID \
-  --orchestrator-endpoint http://127.0.0.1:9801 \
-  --orchestrator-device 1 \
-  --worker-model YOUR_WORKER_ID \
-  --worker-endpoint http://127.0.0.1:9800 \
-  --worker-device 0
+  --planner-model Qwen/Qwen3-32B \
+  --orchestrator-model Qwen/Qwen2.5-7B-Instruct \
+  --worker-model Qwen/Qwen3.5-35B-A3B
 ```
+
+Replace any `--*-model` / `--*-endpoint` / `--*-device` to customize without answering prompts. `--preset external` keeps those models but does not spawn vLLM. `--preset custom --mode managed` asks you to confirm mode in interactive runs.
 
 **Copy a template instead of the wizard:**
 
@@ -145,7 +165,20 @@ cp config/examples/managed.yaml ~/MobyAI/config.yaml # MobyAI spawns vLLM
 cp config/examples/dual_gpu.yaml ~/MobyAI/config.yaml
 ```
 
-Then open the file and replace every `configurable-*-model` string.
+Then open the file only if you need to change a default. Hugging Face ids are already filled in.
+
+### Hugging Face token
+
+The token is **never** stored in YAML.
+
+| Place | Role |
+|-------|------|
+| Prompt during `mobyai setup` | Writes `~/MobyAI/secrets/hf_token` with mode `0600` |
+| `huggingface.token_file` in YAML | Path only |
+| `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` | Overrides the file for the current process |
+| `.env` / `.env.example` | Optional local export; gitignored except the example |
+
+Managed `start` / `run` copies the resolved token into the spawned vLLM environment so Hub downloads work. Leave the prompt blank for fully public models.
 
 ### 2.3 How MobyAI finds the file
 
@@ -189,6 +222,10 @@ Directory that will contain one subdirectory per project (unless `mobyai init --
 
 SQLite file. Pause, crash, and `mobyai resume` reload **this file**, not a chat transcript.
 
+### `huggingface.token_file`
+
+Path to a file containing the Hub token (one line). Setup default: `~/MobyAI/secrets/hf_token`. The token string itself is forbidden in YAML.
+
 ### `services.mode`
 
 | Value | Who starts the HTTP servers | Who stops them |
@@ -208,7 +245,7 @@ GPU index (`0`, `1`, …) or `cpu`. These numbers are not hard-coded in Python. 
 
 | Field | Meaning |
 |-------|---------|
-| `model` | Id the OpenAI-compatible server expects. Must match `GET /v1/models`. Placeholders like `configurable-coding-model` will fail at runtime. |
+| `model` | Hugging Face repo id (or the id `GET /v1/models` returns after the server starts). Setup defaults: Planner `Qwen/Qwen3-32B`, Orchestrator `Qwen/Qwen2.5-7B-Instruct`, Worker `Qwen/Qwen3.5-35B-A3B`. Type a different id at the prompt to override. |
 | `endpoint` | Base URL, no `/v1/chat/completions` suffix. Example: `http://127.0.0.1:9800` |
 | `provider` | Keep `openai_compatible` unless you add another client |
 | `engine` | Label only (vllm, ollama, …). Not an imported SDK |
@@ -287,6 +324,19 @@ mobyai --config ./config.yaml stop demo
 
 `resume` reloads SQLite (`resume_project`) and continues the harness. It does not reconstruct history from chat.
 
+## Operator console (settings + monitor)
+
+```bash
+mobyai --config ./config.yaml ui
+# http://127.0.0.1:8743
+```
+
+**Settings** — per role: endpoint, model id, temperature, top-p, top-k. Apply writes `config.overlay.yaml` next to the main YAML (comments in the main file are kept). A running `mobyai run` reloads that overlay on the next model call.
+
+**Monitor** — the whole DAG on one screen. Each step is a collapsible panel. Non-failed steps show the last 100 event/log lines. Failed steps open with the full event + attempt workflow for that step.
+
+`--no-browser` skips opening a tab. `--port 8743` / `--host 127.0.0.1` bind the stdlib HTTP server.
+
 ---
 
 ## 6. Tests (no GPU)
@@ -307,7 +357,9 @@ The integration suite uses scripted Planner/Worker/Orchestrator payloads under `
 | `No configuration file found` | Pass `--config`, or run `mobyai setup`, or `export MOBYAI_CONFIG=` |
 | `Invalid configuration` | Unknown YAML key, missing `models.planner`, or bad types. `mobyai config validate` |
 | `doctor` FAIL on an endpoint | Server not listening, wrong port, or TLS vs http |
-| Placeholder model id | `GET http://127.0.0.1:9800/v1/models` and paste the real id |
+| `doctor` warn `hf token` | Paste a token in setup, `export HF_TOKEN=...`, or write `~/MobyAI/secrets/hf_token` |
+| Gated Hub 401 on start | Token file empty/wrong; Hugging Face token needs repo access |
+| Wrong model id | `GET http://127.0.0.1:9800/v1/models` and pass `--worker-model` (or the planner/orchestrator flags) |
 | Managed spawn fails | `launch[0]` not on PATH; `nvidia-smi` missing; device index wrong |
 | Workspace FAIL | `project.workspace_root` not writable |
 | Python too old | Recreate `.venv` with 3.12+ |

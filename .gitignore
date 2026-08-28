@@ -7,9 +7,10 @@ dist/
 build/
 .venv/
 venv/
-.env
-.env.*
-!.env.example
+# Hugging Face token written by `mobyai setup` (never commit the token)
+secrets/
+hf_token
+
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -18,6 +19,7 @@ htmlcov/
 *.db
 *.sqlite3
 artifacts/
+*.overlay.yaml
 .DS_Store
 
 # Local master specification prompt; living plan is docs/implementation-plan.md

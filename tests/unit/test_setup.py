@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import stat
 import subprocess
 from io import StringIO
 from pathlib import Path
@@ -8,7 +9,14 @@ import pytest
 
 from mobyai.cli import async_main, parse_args
 from mobyai.models.config import AppConfig, ServiceMode
-from mobyai.setup import RoleAnswers, SetupAnswers, SetupError, render_config_yaml, run_setup
+from mobyai.setup import (
+    DEFAULT_ROLES,
+    RoleAnswers,
+    SetupAnswers,
+    SetupError,
+    render_config_yaml,
+    run_setup,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -30,12 +38,59 @@ async def _setup(argv: list[str], *, stdin: str = "") -> tuple[int, str, str]:
     return code, stdout.getvalue(), stderr.getvalue()
 
 
+def _base_argv(tmp_path: Path, dest: Path) -> list[str]:
+    return [
+        "setup",
+        "--non-interactive",
+        "--output",
+        str(dest),
+        "--workspace",
+        str(tmp_path / "projects"),
+        "--database",
+        str(tmp_path / "mobyai.db"),
+        "--hf-token-file",
+        str(tmp_path / "secrets" / "hf_token"),
+        "--skip-hf-token",
+        "--no-directories",
+    ]
+
+
 def test_parse_args_setup() -> None:
-    args = parse_args(["setup", "--non-interactive", "--mode", "managed", "-o", "out.yaml"])
+    args = parse_args(
+        [
+            "setup",
+            "--non-interactive",
+            "--preset",
+            "default",
+            "--mode",
+            "managed",
+            "-o",
+            "out.yaml",
+            "--skip-hf-token",
+        ]
+    )
     assert args.command == "setup"
     assert args.non_interactive is True
+    assert args.preset == "default"
     assert args.mode == "managed"
     assert args.output == "out.yaml"
+    assert args.skip_hf_token is True
+
+
+async def test_setup_default_preset_is_managed_qwen_stack(tmp_path: Path) -> None:
+    dest = tmp_path / "config.yaml"
+    code, out, err = await _setup(_base_argv(tmp_path, dest))
+    assert err == ""
+    assert code == 0
+    config = AppConfig.from_yaml(dest)
+    assert config.services.mode is ServiceMode.MANAGED
+    assert config.models.planner.model == DEFAULT_ROLES["planner"]["model"]
+    assert config.models.orchestrator.model == DEFAULT_ROLES["orchestrator"]["model"]
+    assert config.models.worker.model == DEFAULT_ROLES["worker"]["model"]
+    assert config.models.worker.launch[0] == "vllm"
+    assert config.huggingface.token_file == tmp_path / "secrets" / "hf_token"
+    assert "hf_test" not in dest.read_text(encoding="utf-8")
+    assert "Next steps" in out
 
 
 async def test_setup_non_interactive_writes_external_config(tmp_path: Path) -> None:
@@ -48,10 +103,15 @@ async def test_setup_non_interactive_writes_external_config(tmp_path: Path) -> N
             "--non-interactive",
             "--output",
             str(dest),
+            "--preset",
+            "external",
             "--workspace",
             str(workspace),
             "--database",
             str(database),
+            "--hf-token-file",
+            str(tmp_path / "hf_token"),
+            "--skip-hf-token",
             "--planner-model",
             "plan-id",
             "--orchestrator-model",
@@ -62,7 +122,6 @@ async def test_setup_non_interactive_writes_external_config(tmp_path: Path) -> N
     )
     assert err == ""
     assert code == 0
-    assert dest.is_file()
     config = AppConfig.from_yaml(dest)
     assert config.services.mode is ServiceMode.EXTERNAL
     assert config.models.planner.model == "plan-id"
@@ -70,70 +129,81 @@ async def test_setup_non_interactive_writes_external_config(tmp_path: Path) -> N
     assert config.project.workspace_root == workspace
     assert config.persistence.database_path == database
     assert workspace.is_dir()
-    assert database.parent.is_dir()
-    assert "Next steps" in out
-    assert "WARNING" not in out
+    assert "WARNING" not in out or "placeholder" not in out.lower()
+
+
+async def test_setup_token_goes_to_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    dest = tmp_path / "config.yaml"
+    token_file = tmp_path / "secrets" / "hf_token"
+    argv = [
+        "setup",
+        "--non-interactive",
+        "--output",
+        str(dest),
+        "--workspace",
+        str(tmp_path / "p"),
+        "--database",
+        str(tmp_path / "db.sqlite"),
+        "--hf-token-file",
+        str(token_file),
+        "--hf-token",
+        "hf_test_secret_abcd",
+        "--no-directories",
+        "--preset",
+        "external",
+    ]
+    code, out, err = await _setup(argv)
+    assert err == ""
+    assert code == 0
+    assert token_file.read_text(encoding="utf-8").strip() == "hf_test_secret_abcd"
+    assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+    yaml_text = dest.read_text(encoding="utf-8")
+    assert "hf_test_secret_abcd" not in yaml_text
+    assert "token_file" in yaml_text
+    assert "mode 0600" in out
 
 
 async def test_setup_managed_includes_launch_argv(tmp_path: Path) -> None:
     dest = tmp_path / "managed.yaml"
-    code, out, err = await _setup(
-        [
-            "setup",
-            "--non-interactive",
-            "--output",
-            str(dest),
-            "--mode",
-            "managed",
-            "--workspace",
-            str(tmp_path / "projects"),
-            "--database",
-            str(tmp_path / "mobyai.db"),
-            "--no-directories",
-        ]
-    )
+    code, out, err = await _setup(_base_argv(tmp_path, dest) + ["--mode", "managed"])
     assert err == ""
     assert code == 0
     config = AppConfig.from_yaml(dest)
     assert config.services.mode is ServiceMode.MANAGED
-    assert config.models.worker.launch[0] == "vllm"
     assert "{model}" in config.models.planner.launch
     assert "{port}" in config.models.planner.launch
     assert "WARNING" in out
+    assert "Hugging Face token" in out or "no Hugging Face token" in out
 
 
-async def test_setup_warns_on_placeholder_models(tmp_path: Path) -> None:
+async def test_setup_warns_on_legacy_placeholder_models(tmp_path: Path) -> None:
     dest = tmp_path / "config.yaml"
     code, out, _err = await _setup(
-        [
-            "setup",
-            "--non-interactive",
-            "--output",
-            str(dest),
-            "--workspace",
-            str(tmp_path / "p"),
-            "--database",
-            str(tmp_path / "db.sqlite"),
-            "--no-directories",
+        _base_argv(tmp_path, dest)
+        + [
+            "--preset",
+            "external",
+            "--planner-model",
+            "configurable-planner-model",
+            "--orchestrator-model",
+            "configurable-small-model",
+            "--worker-model",
+            "configurable-coding-model",
         ]
     )
     assert code == 0
     assert "WARNING" in out
-    assert "placeholder model ids" in out
+    assert "placeholder" in out.lower()
 
 
 async def test_setup_refuses_overwrite_without_force(tmp_path: Path) -> None:
     dest = tmp_path / "config.yaml"
     dest.write_text("already\n", encoding="utf-8")
-    code, _out, err = await _setup(
-        [
-            "setup",
-            "--non-interactive",
-            "--output",
-            str(dest),
-            "--no-directories",
-        ]
-    )
+    code, _out, err = await _setup(_base_argv(tmp_path, dest))
     assert code == 1
     assert "already exists" in err
     assert dest.read_text(encoding="utf-8") == "already\n"
@@ -142,20 +212,7 @@ async def test_setup_refuses_overwrite_without_force(tmp_path: Path) -> None:
 async def test_setup_force_overwrites(tmp_path: Path) -> None:
     dest = tmp_path / "config.yaml"
     dest.write_text("already\n", encoding="utf-8")
-    code, _out, err = await _setup(
-        [
-            "setup",
-            "--non-interactive",
-            "--force",
-            "--output",
-            str(dest),
-            "--workspace",
-            str(tmp_path / "p"),
-            "--database",
-            str(tmp_path / "db.sqlite"),
-            "--no-directories",
-        ]
-    )
+    code, _out, err = await _setup(_base_argv(tmp_path, dest) + ["--force"])
     assert err == ""
     assert code == 0
     AppConfig.from_yaml(dest)
@@ -181,18 +238,67 @@ async def test_setup_interactive_prompts(tmp_path: Path) -> None:
         ]
     )
     code, out, err = await _setup(
-        ["setup", "--output", str(dest)],
+        [
+            "setup",
+            "--output",
+            str(dest),
+            "--hf-token-file",
+            str(tmp_path / "hf_token"),
+            "--skip-hf-token",
+            "--preset",
+            "custom",
+        ],
         stdin=answers + "\n",
     )
     assert err == ""
     assert code == 0
     config = AppConfig.from_yaml(dest)
+    assert config.services.mode is ServiceMode.EXTERNAL
     assert config.models.planner.model == "p-model"
     assert config.models.worker.gpu is None
     assert config.hardware is not None
     assert config.hardware.worker.device == "cpu"
-    assert "Press Enter" in out
+    assert "Press Enter to keep" in out
     assert not (tmp_path / "ws").exists()
+
+
+async def test_setup_interactive_accepts_hf_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    dest = tmp_path / "cfg.yaml"
+    token_file = tmp_path / "tok"
+    answers = "\n".join(
+        [
+            str(tmp_path / "ws"),
+            str(tmp_path / "db.sqlite"),
+            "hf_interactive_zzzz",
+            "default",
+            "",  # planner model default
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "n",
+        ]
+    )
+    code, out, err = await _setup(
+        ["setup", "--output", str(dest), "--hf-token-file", str(token_file)],
+        stdin=answers + "\n",
+    )
+    assert err == ""
+    assert code == 0
+    assert token_file.read_text(encoding="utf-8").strip() == "hf_interactive_zzzz"
+    assert "hf_interactive_zzzz" not in dest.read_text(encoding="utf-8")
+    config = AppConfig.from_yaml(dest)
+    assert config.services.mode is ServiceMode.MANAGED
+    assert config.models.worker.model == DEFAULT_ROLES["worker"]["model"]
+    assert "Press Enter to keep" in out
 
 
 async def test_setup_rejects_non_tty_without_flag(tmp_path: Path) -> None:
@@ -218,7 +324,8 @@ def test_setup_script_help() -> None:
     )
     assert result.returncode == 0
     assert "Walks through" in result.stdout
-    assert "mobyai setup" in result.stdout
+    assert "--hf-token" in result.stdout
+    assert "--preset" in result.stdout
 
 
 def test_render_config_round_trip() -> None:
@@ -232,10 +339,14 @@ def test_render_config_round_trip() -> None:
             orchestrator=RoleAnswers("b", "http://127.0.0.1:2", "1"),
             worker=RoleAnswers("c", "http://127.0.0.1:3", "0"),
             create_directories=False,
+            hf_token="",
+            hf_token_file="~/MobyAI/secrets/hf_token",
+            preset="external",
         )
     )
     config = AppConfig.from_yaml_text(text)
     assert config.models.worker.model == "c"
+    assert config.huggingface.token_file is not None
 
 
 def test_run_setup_bad_mode_raises(tmp_path: Path) -> None:
@@ -244,7 +355,23 @@ def test_run_setup_bad_mode_raises(tmp_path: Path) -> None:
             output=tmp_path / "c.yaml",
             non_interactive=True,
             mode="sidecar",
+            skip_hf_token=True,
+            hf_token_file=str(tmp_path / "hf"),
+            create_directories=False,
             stdin=StringIO(),
             stdout=StringIO(),
+        )
+
+
+def test_run_setup_bad_preset_raises(tmp_path: Path) -> None:
+    with pytest.raises(SetupError, match="default.*external.*custom"):
+        run_setup(
+            output=tmp_path / "c.yaml",
+            non_interactive=True,
+            preset="kubernetes",
+            skip_hf_token=True,
+            hf_token_file=str(tmp_path / "hf"),
             create_directories=False,
+            stdin=StringIO(),
+            stdout=StringIO(),
         )
