@@ -300,7 +300,8 @@ async def test_start_ensures_external_roles(tmp_path: Path) -> None:
         AgentRole.ORCHESTRATOR,
         AgentRole.WORKER,
     ]
-    assert "ready" in out
+    assert "already running" in out or "started" in out
+    assert "ready" in out or "already running" in out
 
 
 async def test_stop_pauses_and_stops_services(tmp_path: Path) -> None:

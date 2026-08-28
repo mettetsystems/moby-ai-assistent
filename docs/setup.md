@@ -5,11 +5,12 @@ This is the operator walkthrough. Do these steps in order. The same sequence is 
 MobyAI is not a chat app. After setup you will have:
 
 1. A Python package (`mobyai`) on your PATH.
-2. A YAML file with **default models and a default runtime deployment** (managed vLLM, dual GPU). You can override any field.
+2. A YAML file with **default models and a default runtime deployment** (managed llama.cpp, dual GPU). You can override any field.
 3. A Hugging Face token file at `~/MobyAI/secrets/hf_token` (mode 0600) if you pasted a token. The token is **not** stored in YAML.
-4. Empty directories for project workspaces.
+4. The llama.cpp `llama` binary (via https://llama.app) and GGUF weights in the Hub cache, plus a passing `/v1/models` check (unless you skip provision).
+5. Empty directories for project workspaces.
 
-The harness will **not** download weights until `mobyai start` / your own servers. Press Enter at each prompt to keep the default, or type a custom value.
+Press Enter at each prompt to keep the default, or type a custom value. After the token prompt, Enter installs llama.cpp, downloads the three GGUF models, and tests each endpoint. Setup then stops those test processes. `mobyai start` reuses a live server or spawns `llama serve`.
 
 ---
 
@@ -20,12 +21,12 @@ Required:
 - A checkout of this repository
 - **Python 3.12 or newer** (`python3 --version`)
 - `pip` (comes with the venv the script creates)
-- Disk write access for the workspace root, SQLite path, and `~/MobyAI/secrets/` (defaults under `~/MobyAI/`)
+- Disk write access for the workspace root, SQLite path, `~/MobyAI/secrets/`, and the Hugging Face cache (reference models are tens of GB)
 - Optional: a Hugging Face token (`HF_TOKEN` or pasted during setup) for gated Hub repos
 
 Required later, before `mobyai run` against real models:
 
-- Three OpenAI-compatible HTTP servers (Planner, Orchestrator, Worker), **or** vLLM on PATH if you keep the default `managed` deployment
+- Three OpenAI-compatible HTTP servers (Planner, Orchestrator, Worker), **or** llama.cpp from setup (`llama` on PATH / `~/.llama-app/llama`)
 - Model ids that those servers actually serve (`GET /v1/models`). Setup fills reference Qwen ids; override them if you serve something else.
 
 Not required for install or for `pytest`:
@@ -55,23 +56,23 @@ The script pauses after each step so you can read what it is about to do. It wil
 | 2 | Finds Python ≥ 3.12 on PATH | Install Python if it exits |
 | 3 | Creates or reuses `./.venv` | Nothing unless `.venv` is the wrong version |
 | 4 | `pip install -e ".[dev]"` into that venv | Wait |
-| 5 | Runs `python -m mobyai setup` | Hugging Face token (or Enter to skip), then Enter to keep default models/devices or type custom ones |
+| 5 | Runs `python -m mobyai setup` | Hugging Face token, then Enter to install llama.cpp, download GGUF weights, and test endpoints |
 | 6 | Prints doctor / first-project commands | `doctor` / `start` / first project |
 
 Reference defaults (still overridable):
 
-| Role | Hugging Face id | Endpoint | GPU |
-|------|-----------------|----------|-----|
-| Planner | `Qwen/Qwen3-32B` | `http://127.0.0.1:9802` | 0 |
-| Orchestrator | `Qwen/Qwen2.5-7B-Instruct` | `http://127.0.0.1:9801` | 1 |
-| Worker | `Qwen/Qwen3.5-35B-A3B` | `http://127.0.0.1:9800` | 0 |
+| Role | Hugging Face GGUF spec | Endpoint | GPU |
+|------|------------------------|----------|-----|
+| Planner | `Qwen/Qwen3-32B-GGUF:Q4_K_M` | `http://127.0.0.1:9802` | 0 |
+| Orchestrator | `Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M` | `http://127.0.0.1:9801` | 1 |
+| Worker | `unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M` | `http://127.0.0.1:9800` | 0 |
 
-Runtime preset `default` is **managed** vLLM (MobyAI spawns processes). `external` uses the same models but you start the servers. `custom` asks for mode first.
+Runtime preset `default` is **managed** llama.cpp (MobyAI spawns `llama serve`). `external` uses the same model ids but you start the servers. `custom` asks for mode first.
 
 Non-interactive (CI or “just write a default config.yaml here”):
 
 ```bash
-./scripts/setup.sh --yes --output ./config.yaml --force --skip-hf-token
+./scripts/setup.sh --yes --output ./config.yaml --force --skip-hf-token --skip-download
 ```
 
 With a token (prefer the prompt; argv is visible in `ps`):
@@ -80,7 +81,7 @@ With a token (prefer the prompt; argv is visible in `ps`):
 ./scripts/setup.sh --yes --output ./config.yaml --force --hf-token-file ~/MobyAI/secrets/hf_token
 # then paste the token when prompted, or:
 export HF_TOKEN=hf_...
-./scripts/setup.sh --yes --force
+./scripts/setup.sh --yes --force --download-models
 ```
 
 Useful flags:
@@ -135,6 +136,7 @@ Either copy a template and edit it, or use the wizard.
 ```bash
 mobyai setup
 # Hugging Face token -> ~/MobyAI/secrets/hf_token
+# then downloads Qwen/Qwen3-32B, Qwen/Qwen2.5-7B-Instruct, Qwen/Qwen3.5-35B-A3B
 # preset default = managed dual-GPU + reference Qwen models
 ```
 
@@ -145,6 +147,7 @@ mobyai setup --non-interactive --output ./config.yaml --force \
   --preset default \
   --hf-token-file ~/MobyAI/secrets/hf_token \
   --skip-hf-token \
+  --skip-download \
   --workspace ~/MobyAI/projects \
   --database ~/MobyAI/mobyai.db \
   --planner-model Qwen/Qwen3-32B \
@@ -178,7 +181,19 @@ The token is **never** stored in YAML.
 | `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` | Overrides the file for the current process |
 | `.env` / `.env.example` | Optional local export; gitignored except the example |
 
-Managed `start` / `run` copies the resolved token into the spawned vLLM environment so Hub downloads work. Leave the prompt blank for fully public models.
+Managed `start` / `run` copies the resolved token into the spawned llama.cpp environment. Interactive setup installs llama.cpp, fills the Hub cache, and healthchecks endpoints unless you answered no (or passed `--skip-download`). Leave the token prompt blank only for fully public models.
+
+### Model download and llama.cpp
+
+After the token prompt, `mobyai setup` asks **Install llama.cpp, download models, and test endpoints now?** (default yes). That:
+
+1. Installs the official `llama` binary from https://llama.app if `llama` / `llama-server` is not already on PATH (`~/.llama-app/llama` and `~/.local/bin/llama` are also checked).
+2. Downloads each unique `org/name:QUANT` GGUF spec into the Hub cache (`huggingface_hub.snapshot_download`).
+3. Spawns each managed role once, waits for `/v1/models`, then stops those test processes.
+
+`mobyai start` then healthchecks first. A live endpoint is reused; otherwise it spawns `llama serve -hf {model}`.
+
+`--non-interactive` skips provision unless you pass `--download-models`. `--skip-download` skips install, download, and the endpoint test. `--skip-runtime` / `--skip-endpoint-test` skip those steps only.
 
 ### 2.3 How MobyAI finds the file
 
@@ -245,10 +260,10 @@ GPU index (`0`, `1`, …) or `cpu`. These numbers are not hard-coded in Python. 
 
 | Field | Meaning |
 |-------|---------|
-| `model` | Hugging Face repo id (or the id `GET /v1/models` returns after the server starts). Setup defaults: Planner `Qwen/Qwen3-32B`, Orchestrator `Qwen/Qwen2.5-7B-Instruct`, Worker `Qwen/Qwen3.5-35B-A3B`. Type a different id at the prompt to override. |
+| `model` | llama.cpp `-hf` spec (`org/name:QUANT`) or the id `GET /v1/models` returns. Setup defaults: Planner `Qwen/Qwen3-32B-GGUF:Q4_K_M`, Orchestrator `Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M`, Worker `unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M`. |
 | `endpoint` | Base URL, no `/v1/chat/completions` suffix. Example: `http://127.0.0.1:9800` |
 | `provider` | Keep `openai_compatible` unless you add another client |
-| `engine` | Label only (vllm, ollama, …). Not an imported SDK |
+| `engine` | Label only (`llama.cpp`, vllm, ollama, …). Not an imported SDK |
 | `launch` | Argv used **only** in managed mode. Tokens `{model}` and `{port}` are substituted |
 
 Default ports in the bundled examples:
@@ -293,9 +308,9 @@ mobyai --config ./config.yaml start
 
 ### Managed mode
 
-1. Put the first token of each `launch` list on PATH (the examples use `vllm`).
+1. Put `llama` on PATH (setup does this via https://llama.app) or keep the absolute path setup wrote.
 2. Set `services.mode: managed` (or `mobyai setup --mode managed`).
-3. `mobyai start` brings the Orchestrator up and leaves Planner/Worker to swap during `run`.
+3. `mobyai start` healthchecks each role. Live servers are reused; missing ones are spawned with `llama serve`. Planner and Worker that share a GPU still swap during `run`.
 
 ---
 
@@ -358,7 +373,8 @@ The integration suite uses scripted Planner/Worker/Orchestrator payloads under `
 | `Invalid configuration` | Unknown YAML key, missing `models.planner`, or bad types. `mobyai config validate` |
 | `doctor` FAIL on an endpoint | Server not listening, wrong port, or TLS vs http |
 | `doctor` warn `hf token` | Paste a token in setup, `export HF_TOKEN=...`, or write `~/MobyAI/secrets/hf_token` |
-| Gated Hub 401 on start | Token file empty/wrong; Hugging Face token needs repo access |
+| Gated Hub 401 on setup download | Token file empty/wrong; the Hugging Face token needs repo access |
+| Gated Hub 401 on start | Weights missing from the Hub cache; re-run setup and accept the download, or set `HF_TOKEN` |
 | Wrong model id | `GET http://127.0.0.1:9800/v1/models` and pass `--worker-model` (or the planner/orchestrator flags) |
 | Managed spawn fails | `launch[0]` not on PATH; `nvidia-smi` missing; device index wrong |
 | Workspace FAIL | `project.workspace_root` not writable |

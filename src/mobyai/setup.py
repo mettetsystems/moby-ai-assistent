@@ -1,20 +1,27 @@
-"""First-run setup wizard. Writes a commented YAML config; does not start models."""
+"""First-run setup wizard. Writes config, installs llama.cpp, pulls GGUF weights, tests endpoints."""
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TextIO
+from typing import Callable, TextIO
 
 from mobyai.inference.huggingface import (
+    HubDownloadError,
+    hub_repo_ids,
     mask_token,
+    pull_hub_models,
     token_from_file,
     write_token_file,
 )
-from mobyai.models.config import AppConfig, ServiceMode
+from mobyai.inference.llamacpp import LlamaRuntimeError, ensure_llama_runtime
+from mobyai.inference.service_manager import GpuServiceManager
+from mobyai.models.config import AgentRole, AppConfig, ServiceMode
 
 DEFAULT_OUTPUT = Path("config.yaml")
 DEFAULT_WORKSPACE = "~/MobyAI/projects"
@@ -28,17 +35,17 @@ PRESETS = frozenset({"default", "external", "custom"})
 # Reference stack from the operator spec. Overridable at every prompt and flag.
 DEFAULT_ROLES: dict[str, dict[str, str]] = {
     "planner": {
-        "model": "Qwen/Qwen3-32B",
+        "model": "Qwen/Qwen3-32B-GGUF:Q4_K_M",
         "endpoint": "http://127.0.0.1:9802",
         "device": "0",
     },
     "orchestrator": {
-        "model": "Qwen/Qwen2.5-7B-Instruct",
+        "model": "Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M",
         "endpoint": "http://127.0.0.1:9801",
         "device": "1",
     },
     "worker": {
-        "model": "Qwen/Qwen3.5-35B-A3B",
+        "model": "unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M",
         "endpoint": "http://127.0.0.1:9800",
         "device": "0",
     },
@@ -79,6 +86,9 @@ class SetupAnswers:
     hf_token: str
     hf_token_file: str
     preset: str
+    download_models: bool
+    install_runtime: bool
+    endpoint_test: bool
 
 
 def run_setup(
@@ -103,6 +113,11 @@ def run_setup(
     hf_token_file: str | None = None,
     skip_hf_token: bool = False,
     preset: str | None = None,
+    download_models: bool | None = None,
+    skip_download: bool = False,
+    skip_runtime: bool = False,
+    skip_endpoint_test: bool = False,
+    llama_installer: Callable[[], Path] | None = None,
     stdin: TextIO,
     stdout: TextIO,
 ) -> int:
@@ -133,12 +148,21 @@ def run_setup(
         hf_token_file=hf_token_file,
         skip_hf_token=skip_hf_token,
         preset=preset,
+        download_models=download_models,
+        skip_download=skip_download,
+        skip_runtime=skip_runtime,
+        skip_endpoint_test=skip_endpoint_test,
         interactive=interactive,
         force=force,
         stdin=stdin,
         stdout=stdout,
     )
     write_setup(answers, stdout=stdout)
+    _provision_platform(
+        answers,
+        stdout=stdout,
+        llama_installer=llama_installer,
+    )
     _print_next_steps(answers, stdout)
     return 0
 
@@ -163,6 +187,10 @@ def collect_answers(
     hf_token_file: str | None,
     skip_hf_token: bool,
     preset: str | None,
+    download_models: bool | None,
+    skip_download: bool,
+    skip_runtime: bool,
+    skip_endpoint_test: bool,
     interactive: bool,
     force: bool,
     stdin: TextIO,
@@ -228,7 +256,7 @@ def collect_answers(
     print("", file=stdout)
     print("Runtime deployment", file=stdout)
     print(
-        "  default  — managed vLLM, dual GPU (planner+worker on 0, orchestrator on 1),",
+        "  default  — managed llama.cpp, dual GPU (planner+worker on 0, orchestrator on 1),",
         file=stdout,
     )
     print("             reference Hugging Face models (Enter on each field to keep)", file=stdout)
@@ -265,7 +293,7 @@ def collect_answers(
             file=stdout,
         )
         print(
-            "  managed  — MobyAI spawns vLLM with CUDA_VISIBLE_DEVICES from hardware",
+            "  managed  — MobyAI spawns llama.cpp with CUDA_VISIBLE_DEVICES from hardware",
             file=stdout,
         )
         mode_value = _value(
@@ -324,6 +352,30 @@ def collect_answers(
     else:
         make_dirs = create_directories
 
+    if skip_download:
+        pull = False
+    elif download_models is True:
+        pull = True
+    elif download_models is False:
+        pull = False
+    elif interactive:
+        print("", file=stdout)
+        print("Platform provision", file=stdout)
+        print(
+            "  Installs llama.cpp, downloads GGUF weights (often tens of GB),",
+            file=stdout,
+        )
+        print("  then starts each role once and checks /v1/models.", file=stdout)
+        print("  After that, `mobyai start` should find servers or spawn them.", file=stdout)
+        pull = _ask_bool(
+            "Install llama.cpp, download models, and test endpoints now?",
+            default=True,
+            stdin=stdin,
+            stdout=stdout,
+        )
+    else:
+        pull = False
+
     return SetupAnswers(
         output=dest,
         workspace=workspace_value,
@@ -336,6 +388,9 @@ def collect_answers(
         hf_token=token_value,
         hf_token_file=token_file_value,
         preset=preset_value,
+        download_models=pull,
+        install_runtime=pull and not skip_runtime,
+        endpoint_test=pull and not skip_endpoint_test,
     )
 
 
@@ -366,6 +421,105 @@ def write_setup(answers: SetupAnswers, *, stdout: TextIO) -> Path:
         print(f"workspaces {workspace}", file=stdout)
         print(f"database   {database.parent}  (file created on first init)", file=stdout)
     return answers.output
+
+
+def _provision_platform(
+    answers: SetupAnswers,
+    *,
+    stdout: TextIO,
+    llama_installer: Callable[[], Path] | None,
+) -> None:
+    if answers.install_runtime:
+        print("", file=stdout)
+        try:
+            ensure_llama_runtime(
+                stdout=stdout,
+                installer=llama_installer,
+            )
+        except LlamaRuntimeError as exc:
+            raise SetupError(str(exc)) from exc
+    _download_weights(answers, stdout=stdout)
+    if answers.endpoint_test:
+        _endpoint_test(answers, stdout=stdout)
+
+
+def _download_weights(answers: SetupAnswers, *, stdout: TextIO) -> None:
+    if not answers.download_models:
+        return
+    ids = hub_repo_ids(
+        answers.planner.model,
+        answers.orchestrator.model,
+        answers.worker.model,
+    )
+    if not ids:
+        print("No Hugging Face repo ids to download (need org/name).", file=stdout)
+        return
+    token = (answers.hf_token or "").strip() or token_from_file(answers.hf_token_file)
+    if not token:
+        token = (
+            os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or ""
+        ).strip() or None
+    print("", file=stdout)
+    print("Downloading model weights into the Hugging Face cache.", file=stdout)
+    try:
+        pull_hub_models(ids, token=token, stdout=stdout)
+    except HubDownloadError as exc:
+        raise SetupError(str(exc)) from exc
+
+
+def _run_async(factory):  # type: ignore[no-untyped-def]
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(factory())
+
+    box: dict[str, object] = {}
+
+    def worker() -> None:
+        try:
+            box["ok"] = asyncio.run(factory())
+        except BaseException as exc:  # noqa: BLE001
+            box["err"] = exc
+
+    thread = threading.Thread(target=worker, name="mobyai-setup-probe")
+    thread.start()
+    thread.join()
+    if "err" in box:
+        raise box["err"]  # type: ignore[misc]
+    return box.get("ok")
+
+
+def _endpoint_test(answers: SetupAnswers, *, stdout: TextIO) -> None:
+    if answers.mode != ServiceMode.MANAGED.value:
+        print(
+            "Endpoint test skipped (external mode — start your own servers, then `mobyai doctor`).",
+            file=stdout,
+        )
+        return
+    config = AppConfig.from_yaml(answers.output)
+    print("", file=stdout)
+    print("Testing llama.cpp endpoints (first start may download GGUF files)…", file=stdout)
+
+    async def _probe() -> None:
+        manager = GpuServiceManager(config)
+        try:
+            for role in AgentRole:
+                endpoint = await manager.ensure_role_available(role)
+                print(
+                    f"  {role.value:<14} ok  {endpoint.base_url}",
+                    file=stdout,
+                    flush=True,
+                )
+            for role in AgentRole:
+                await manager.stop_role(role)
+        finally:
+            await manager.aclose()
+
+    try:
+        _run_async(_probe)
+    except Exception as exc:
+        raise SetupError(f"Endpoint test failed: {exc}") from exc
+    print("Endpoint test passed. `mobyai start` will reuse a live server or spawn llama.cpp.", file=stdout)
 
 
 def render_config_yaml(answers: SetupAnswers) -> str:
@@ -409,9 +563,9 @@ huggingface:
 
 services:
   # external: you already started the three OpenAI-compatible servers.
-  # managed:  MobyAI spawns each role's `launch` argv with CUDA_VISIBLE_DEVICES from hardware.
+  # managed:  MobyAI spawns llama.cpp (`llama serve`) with CUDA_VISIBLE_DEVICES from hardware.
   mode: {answers.mode}
-  health_timeout_seconds: 60
+  health_timeout_seconds: 600
   health_poll_interval_seconds: 0.5
   stop_timeout_seconds: 15
   # When planner and worker share a device, persist state then swap the CUDA process.
@@ -429,7 +583,7 @@ hardware:
 models:
   planner:
     provider: openai_compatible
-    engine: vllm
+    engine: llama.cpp
     model: {_yaml_scalar(answers.planner.model)}
     gpu: {_yaml_gpu(answers.planner.device)}
     endpoint: {_yaml_scalar(answers.planner.endpoint)}
@@ -437,13 +591,13 @@ models:
     kv_cache_dtype: fp8{planner_launch}
   orchestrator:
     provider: openai_compatible
-    engine: configurable
+    engine: llama.cpp
     model: {_yaml_scalar(answers.orchestrator.model)}
     gpu: {_yaml_gpu(answers.orchestrator.device)}
     endpoint: {_yaml_scalar(answers.orchestrator.endpoint)}{orchestrator_launch}
   worker:
     provider: openai_compatible
-    engine: vllm
+    engine: llama.cpp
     model: {_yaml_scalar(answers.worker.model)}
     gpu: {_yaml_gpu(answers.worker.device)}
     endpoint: {_yaml_scalar(answers.worker.endpoint)}
@@ -543,7 +697,7 @@ def _collect_role(
     return RoleAnswers(
         model=_value(
             model,
-            f"{role} Hugging Face model id",
+            f"{role} Hugging Face GGUF spec (org/name:QUANT)",
             defaults["model"],
             interactive=interactive,
             stdin=stdin,
@@ -638,17 +792,22 @@ def _can_prompt(stdin: TextIO) -> bool:
 def _print_preamble(stdout: TextIO, *, interactive: bool) -> None:
     print("MobyAI setup", file=stdout)
     print(
-        "This writes a YAML config and optionally a Hugging Face token file.",
+        "This writes a YAML config, installs llama.cpp, stores an optional Hugging Face token, "
+        "downloads GGUF weights, and tests each OpenAI-compatible endpoint.",
         file=stdout,
     )
-    print("It does not download weights or start GPUs until you run `mobyai start`.", file=stdout)
+    print("It does not leave the GPU servers running; `mobyai start` does that.", file=stdout)
     print(
-        "Default stack: managed vLLM, dual GPU, Qwen3-32B / Qwen2.5-7B / Qwen3.5-35B-A3B.",
+        "Default stack: managed llama.cpp, dual GPU, Qwen3-32B / Qwen2.5-7B / Qwen3.5-35B-A3B GGUF.",
         file=stdout,
     )
     print("Press Enter to keep a [default], or type a custom value.", file=stdout)
     if not interactive:
-        print("Non-interactive: defaults plus any flags you passed.", file=stdout)
+        print(
+            "Non-interactive: defaults plus any flags you passed. "
+            "Pass --download-models to install llama.cpp, pull weights, and test endpoints.",
+            file=stdout,
+        )
     print("", file=stdout)
     print("Config search order after this file exists:", file=stdout)
     print("  1. --config PATH", file=stdout)
@@ -697,10 +856,22 @@ def _print_next_steps(answers: SetupAnswers, stdout: TextIO) -> None:
         print(f"  4. Healthcheck       mobyai --config {cfg} doctor", file=stdout)
         print(f"  5. Mark ready        mobyai --config {cfg} start", file=stdout)
     else:
-        print("  3. Put vLLM on PATH. First start pulls weights using the HF token file.", file=stdout)
+        if answers.download_models:
+            print(
+                "  3. llama.cpp is installed. Weights are in the Hugging Face cache.",
+                file=stdout,
+            )
+        else:
+            print(
+                "  3. Install llama.cpp (https://llama.app) or re-run setup and accept provision.",
+                file=stdout,
+            )
         print(f"  4. Healthcheck       mobyai --config {cfg} doctor", file=stdout)
         print(f"  5. Start             mobyai --config {cfg} start", file=stdout)
-        print("     (managed mode starts Orchestrator now; Planner/Worker swap during run)", file=stdout)
+        print(
+            "     (start reuses a live /v1/models endpoint; otherwise it spawns llama serve)",
+            file=stdout,
+        )
     print(
         f"  6. Create a project  mobyai --config {cfg} init --name demo --objective \"...\"",
         file=stdout,
@@ -715,18 +886,24 @@ def _launch_block(mode: str) -> str:
         return ""
     return """
     launch:
-      - vllm
+      - llama
       - serve
+      - -hf
       - "{model}"
+      - --host
+      - 127.0.0.1
       - --port
       - "{port}"
+      - -ngl
+      - "99"
+      - --jinja
 """
 
 
 def _yaml_scalar(value: str) -> str:
     if value == "":
         return '""'
-    special = value[0] in ":-{}[]!#&*?|>%@`'\"" or ": " in value or "\n" in value
+    special = value[0] in ":-{}[]!#&*?|>%@`'\"" or ": " in value or ":" in value or "\n" in value
     if special or value.lower() in {"true", "false", "null", "yes", "no"}:
         escaped = value.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{escaped}"'

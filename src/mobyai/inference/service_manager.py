@@ -17,6 +17,7 @@ import httpx
 from mobyai.inference.base import InferenceError
 from mobyai.inference.health import openai_healthcheck
 from mobyai.inference.huggingface import huggingface_environ
+from mobyai.inference.llamacpp import resolve_launch_argv
 from mobyai.models.config import AgentRole, AppConfig, ServiceMode
 from mobyai.models.inference import GpuServiceMode, InferenceEndpoint
 
@@ -161,8 +162,6 @@ class GpuServiceManager:
             return await self._ensure(role)
 
     async def healthcheck(self, role: AgentRole) -> bool:
-        if self._is_managed(role) and not self._alive(role):
-            return False
         return await self._probe_health(role)
 
     async def stop_role(self, role: AgentRole) -> None:
@@ -186,18 +185,15 @@ class GpuServiceManager:
             await self._client.aclose()
 
     async def _ensure(self, role: AgentRole) -> InferenceEndpoint:
-        if not self._is_managed(role):
-            if not await self._probe_health(role):
-                raise RoleUnhealthyError(
-                    f"{role.value} endpoint is not healthy: "
-                    f"{self._config.models.for_role(role).endpoint}"
-                )
+        if await self._probe_health(role):
             self._occupy(role)
             return self._endpoint(role)
 
-        if self._alive(role) and await self._probe_health(role):
-            self._occupy(role)
-            return self._endpoint(role)
+        if not self._is_managed(role):
+            raise RoleUnhealthyError(
+                f"{role.value} endpoint is not healthy: "
+                f"{self._config.models.for_role(role).endpoint}"
+            )
 
         if self._alive(role):
             await self._stop(role)
@@ -323,7 +319,9 @@ def render_launch(config: AppConfig, role: AgentRole) -> list[str]:
         "device": "" if device_for_role(config, role) is None else str(device_for_role(config, role)),
         "quantization": model.quantization or "",
     }
-    return [_substitute(part, values) for part in model.launch]
+    return resolve_launch_argv(
+        [_substitute(part, values) for part in model.launch]
+    )
 
 
 def service_manager_from_config(

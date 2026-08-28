@@ -51,6 +51,7 @@ def _base_argv(tmp_path: Path, dest: Path) -> list[str]:
         "--hf-token-file",
         str(tmp_path / "secrets" / "hf_token"),
         "--skip-hf-token",
+        "--skip-download",
         "--no-directories",
     ]
 
@@ -87,7 +88,7 @@ async def test_setup_default_preset_is_managed_qwen_stack(tmp_path: Path) -> Non
     assert config.models.planner.model == DEFAULT_ROLES["planner"]["model"]
     assert config.models.orchestrator.model == DEFAULT_ROLES["orchestrator"]["model"]
     assert config.models.worker.model == DEFAULT_ROLES["worker"]["model"]
-    assert config.models.worker.launch[0] == "vllm"
+    assert config.models.worker.launch[0] == "llama"
     assert config.huggingface.token_file == tmp_path / "secrets" / "hf_token"
     assert "hf_test" not in dest.read_text(encoding="utf-8")
     assert "Next steps" in out
@@ -152,6 +153,7 @@ async def test_setup_token_goes_to_file(
         str(token_file),
         "--hf-token",
         "hf_test_secret_abcd",
+        "--skip-download",
         "--no-directories",
         "--preset",
         "external",
@@ -176,6 +178,8 @@ async def test_setup_managed_includes_launch_argv(tmp_path: Path) -> None:
     assert config.services.mode is ServiceMode.MANAGED
     assert "{model}" in config.models.planner.launch
     assert "{port}" in config.models.planner.launch
+    assert config.models.planner.launch[0] == "llama"
+    assert "-hf" in config.models.planner.launch
     assert "WARNING" in out
     assert "Hugging Face token" in out or "no Hugging Face token" in out
 
@@ -245,6 +249,7 @@ async def test_setup_interactive_prompts(tmp_path: Path) -> None:
             "--hf-token-file",
             str(tmp_path / "hf_token"),
             "--skip-hf-token",
+            "--skip-download",
             "--preset",
             "custom",
         ],
@@ -288,7 +293,7 @@ async def test_setup_interactive_accepts_hf_token(
         ]
     )
     code, out, err = await _setup(
-        ["setup", "--output", str(dest), "--hf-token-file", str(token_file)],
+        ["setup", "--output", str(dest), "--hf-token-file", str(token_file), "--skip-download"],
         stdin=answers + "\n",
     )
     assert err == ""
@@ -326,6 +331,10 @@ def test_setup_script_help() -> None:
     assert "Walks through" in result.stdout
     assert "--hf-token" in result.stdout
     assert "--preset" in result.stdout
+    assert "--download-models" in result.stdout
+    assert "--skip-download" in result.stdout
+    assert "--skip-runtime" in result.stdout
+    assert "--skip-endpoint-test" in result.stdout
 
 
 def test_render_config_round_trip() -> None:
@@ -342,6 +351,9 @@ def test_render_config_round_trip() -> None:
             hf_token="",
             hf_token_file="~/MobyAI/secrets/hf_token",
             preset="external",
+            download_models=False,
+            install_runtime=False,
+            endpoint_test=False,
         )
     )
     config = AppConfig.from_yaml_text(text)
@@ -375,3 +387,155 @@ def test_run_setup_bad_preset_raises(tmp_path: Path) -> None:
             stdin=StringIO(),
             stdout=StringIO(),
         )
+
+
+async def test_setup_non_interactive_does_not_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    called: list[object] = []
+    monkeypatch.setattr(
+        "mobyai.setup.pull_hub_models",
+        lambda *args, **kwargs: called.append(1),
+    )
+    dest = tmp_path / "config.yaml"
+    argv = [
+        "setup",
+        "--non-interactive",
+        "--output",
+        str(dest),
+        "--workspace",
+        str(tmp_path / "projects"),
+        "--database",
+        str(tmp_path / "mobyai.db"),
+        "--hf-token-file",
+        str(tmp_path / "secrets" / "hf_token"),
+        "--skip-hf-token",
+        "--no-directories",
+    ]
+    code, _out, err = await _setup(argv)
+    assert err == ""
+    assert code == 0
+    assert called == []
+
+
+async def test_setup_download_models_pulls_unique_hub_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dest = tmp_path / "config.yaml"
+    seen: list[tuple[tuple[str, ...], str | None]] = []
+
+    def fake_pull(repo_ids, *, token, stdout, snapshot=None):
+        seen.append((tuple(repo_ids), token))
+        print(f"Downloading {repo_ids[0]}", file=stdout)
+        return ["/cache/fake"]
+
+    monkeypatch.setattr("mobyai.setup.pull_hub_models", fake_pull)
+    code, out, err = await _setup(
+        [
+            "setup",
+            "--non-interactive",
+            "--output",
+            str(dest),
+            "--workspace",
+            str(tmp_path / "projects"),
+            "--database",
+            str(tmp_path / "mobyai.db"),
+            "--hf-token-file",
+            str(tmp_path / "secrets" / "hf_token"),
+            "--hf-token",
+            "hf_download_secret",
+            "--download-models",
+            "--skip-runtime",
+            "--skip-endpoint-test",
+            "--no-directories",
+            "--planner-model",
+            "Qwen/Qwen3-32B",
+            "--orchestrator-model",
+            "Qwen/Qwen2.5-7B-Instruct",
+            "--worker-model",
+            "Qwen/Qwen3-32B",
+        ]
+    )
+    assert err == ""
+    assert code == 0
+    assert seen == [
+        (
+            ("Qwen/Qwen3-32B", "Qwen/Qwen2.5-7B-Instruct"),
+            "hf_download_secret",
+        )
+    ]
+    assert "Downloading Qwen/Qwen3-32B" in out
+
+
+async def test_setup_download_failure_is_setup_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mobyai.inference.huggingface import HubDownloadError
+
+    monkeypatch.setattr(
+        "mobyai.setup.pull_hub_models",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            HubDownloadError("Failed to download Qwen/Qwen3-32B: 401")
+        ),
+    )
+    dest = tmp_path / "config.yaml"
+    code, _out, err = await _setup(
+        [
+            "setup",
+            "--non-interactive",
+            "--output",
+            str(dest),
+            "--workspace",
+            str(tmp_path / "projects"),
+            "--database",
+            str(tmp_path / "mobyai.db"),
+            "--hf-token-file",
+            str(tmp_path / "secrets" / "hf_token"),
+            "--hf-token",
+            "hf_bad",
+            "--download-models",
+            "--skip-runtime",
+            "--skip-endpoint-test",
+            "--no-directories",
+        ]
+    )
+    assert code == 1
+    assert "Failed to download" in err
+    assert dest.is_file()
+
+
+async def test_setup_download_models_installs_llama(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installed: list[object] = []
+    monkeypatch.setattr(
+        "mobyai.setup.ensure_llama_runtime",
+        lambda **kwargs: installed.append(kwargs) or tmp_path / "llama",
+    )
+    monkeypatch.setattr(
+        "mobyai.setup.pull_hub_models",
+        lambda *args, **kwargs: ["/cache"],
+    )
+    dest = tmp_path / "config.yaml"
+    code, out, err = await _setup(
+        [
+            "setup",
+            "--non-interactive",
+            "--output",
+            str(dest),
+            "--workspace",
+            str(tmp_path / "projects"),
+            "--database",
+            str(tmp_path / "mobyai.db"),
+            "--hf-token-file",
+            str(tmp_path / "secrets" / "hf_token"),
+            "--skip-hf-token",
+            "--download-models",
+            "--skip-endpoint-test",
+            "--no-directories",
+        ]
+    )
+    assert err == ""
+    assert code == 0
+    assert installed
+    assert "llama.cpp" in out or installed

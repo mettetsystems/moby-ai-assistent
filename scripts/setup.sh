@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Walk through installing MobyAI and writing a local config.
-# This script does not download model weights or start GPUs.
+# Walk through installing MobyAI, llama.cpp, GGUF weights, and an endpoint test.
+# `mobyai start` then reuses a live server or spawns llama serve.
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -21,13 +21,13 @@ Walks through, in order:
   2. Find Python 3.12 or newer
   3. Create .venv (unless SKIP or already active)
   4. pip install -e ".[dev]"
-  5. Run `mobyai setup` (HF token, default models, runtime preset; custom values still accepted)
-  6. Print the remaining operator steps (servers, doctor, first project)
+  5. Run `mobyai setup` (HF token, llama.cpp, GGUF download, endpoint test)
+  6. Print remaining operator steps (doctor, start, first project)
 
 Usage:
   ./scripts/setup.sh
   ./scripts/setup.sh --yes
-  ./scripts/setup.sh --yes --output ./config.yaml --mode external --force
+  ./scripts/setup.sh --yes --output ./config.yaml --force --skip-hf-token --skip-download
 
 Options (this script):
   -h, --help             Show this help
@@ -45,6 +45,10 @@ Options forwarded to `mobyai setup`:
   --hf-token TOKEN
   --hf-token-file PATH
   --skip-hf-token
+  --download-models
+  --skip-download
+  --skip-runtime
+  --skip-endpoint-test
   --workspace PATH
   --database PATH
   --planner-model ID
@@ -130,7 +134,7 @@ while [[ $# -gt 0 ]]; do
       SETUP_ARGS+=("$2")
       shift 2
       ;;
-    --force|--no-directories|--skip-hf-token)
+    --force|--no-directories|--skip-hf-token|--download-models|--skip-download|--skip-runtime|--skip-endpoint-test)
       SETUP_ARGS+=("$1")
       shift
       ;;
@@ -144,7 +148,8 @@ done
 
 log "MobyAI setup walkthrough"
 log "Repository: $REPO_ROOT"
-log "This writes config and an optional Hugging Face token file. It does not start GPUs."
+log "This writes config, installs llama.cpp, stores an optional Hugging Face token,"
+log "downloads GGUF weights, and tests each role's /v1/models endpoint."
 log "Full written form of these steps: docs/setup.md"
 pause
 
@@ -213,13 +218,16 @@ if [[ "$SKIP_INSTALL" -eq 1 ]]; then
   step "4/6  Skip pip (--skip-install)"
 fi
 
-step "5/6  Write YAML config (mobyai setup)"
+step "5/6  Write YAML, install llama.cpp, pull models, test endpoints (mobyai setup)"
 log "Defaults: Hugging Face token -> ~/MobyAI/secrets/hf_token"
-log "          managed vLLM, GPU 0 planner+worker, GPU 1 orchestrator"
-log "          Qwen/Qwen3-32B, Qwen/Qwen2.5-7B-Instruct, Qwen/Qwen3.5-35B-A3B"
+log "          managed llama.cpp, GPU 0 planner+worker, GPU 1 orchestrator"
+log "          Qwen/Qwen3-32B-GGUF:Q4_K_M, Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M,"
+log "          unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M"
+log "After the token prompt, Enter installs llama.cpp, downloads GGUF files, and healthchecks."
 log "Press Enter to keep a default, or type a custom model / endpoint / device."
 if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
   log "Non-interactive: those defaults plus any flags you passed."
+  log "Pass --download-models to install llama.cpp, pull weights, and test endpoints."
 fi
 pause
 "$VENV_PY" -m mobyai setup "${SETUP_ARGS[@]+"${SETUP_ARGS[@]}"}"
@@ -234,9 +242,10 @@ Then:
   2. If you skipped the Hugging Face token, export HF_TOKEN or write ~/MobyAI/secrets/hf_token
   3. mobyai --config PATH config validate
   4. If services.mode is external, start three OpenAI-compatible servers on the configured ports.
-     If managed, put vLLM on PATH; first start pulls weights using the token file.
+     If managed, setup already installed llama.cpp unless you skipped provision.
   5. mobyai --config PATH doctor
   6. mobyai --config PATH start
+     (reuses a live endpoint; otherwise spawns llama serve)
   7. mobyai --config PATH init --name demo --objective "Create a small REST API with an SQLite-backed task manager."
   8. mobyai --config PATH run demo
 

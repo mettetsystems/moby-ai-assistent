@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from mobyai.inference.huggingface import (
     huggingface_environ,
     mask_token,
@@ -52,3 +54,52 @@ def test_resolve_prefers_env(tmp_path: Path, monkeypatch) -> None:
 def test_mask_token() -> None:
     assert mask_token("abcd") == "****"
     assert mask_token("hf_secret_token").endswith("oken")
+
+
+def test_hub_repo_ids_unique_and_skips_local_names() -> None:
+    from mobyai.inference.huggingface import hub_repo_ids, is_hub_repo_id
+
+    assert is_hub_repo_id("Qwen/Qwen3-32B")
+    assert is_hub_repo_id("Qwen/Qwen3-32B-GGUF:Q4_K_M")
+    assert not is_hub_repo_id("plan-id")
+    assert not is_hub_repo_id("configurable-planner-model")
+    assert not is_hub_repo_id("https://example.com/model")
+    assert hub_repo_ids(
+        "Qwen/Qwen3-32B-GGUF:Q4_K_M",
+        "Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M",
+        "Qwen/Qwen3-32B-GGUF:Q4_K_M",
+        "local-id",
+    ) == ["Qwen/Qwen3-32B-GGUF:Q4_K_M", "Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M"]
+
+
+def test_pull_hub_models_uses_snapshot_and_wraps_errors(tmp_path: Path) -> None:
+    from io import StringIO
+
+    from mobyai.inference.huggingface import HubDownloadError, pull_hub_models
+
+    seen: list[tuple[str, object]] = []
+
+    def fake_snapshot(repo_id, *, token=None, allow_patterns=None):
+        seen.append((repo_id, allow_patterns))
+        return str(tmp_path / repo_id.replace("/", "--"))
+
+    stdout = StringIO()
+    paths = pull_hub_models(
+        ["Qwen/Qwen3-32B-GGUF:Q4_K_M"],
+        token="hf_x",
+        stdout=stdout,
+        snapshot=fake_snapshot,
+    )
+    assert paths == [str(tmp_path / "Qwen--Qwen3-32B-GGUF")]
+    assert seen == [("Qwen/Qwen3-32B-GGUF", ["*Q4_K_M*"])]
+    assert "Downloading Qwen/Qwen3-32B-GGUF:Q4_K_M" in stdout.getvalue()
+
+    with pytest.raises(HubDownloadError, match="gated"):
+        pull_hub_models(
+            ["org/gated"],
+            token=None,
+            stdout=StringIO(),
+            snapshot=lambda repo_id, token=None: (_ for _ in ()).throw(
+                RuntimeError("gated")
+            ),
+        )

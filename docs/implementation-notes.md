@@ -384,7 +384,7 @@ Design record for major subsystems. Each section covers what it does, why it exi
 
 **Why it exists.** Planner and Worker may share a physical GPU over time but must not share a CUDA process with the Orchestrator, and mixed GPU generations must not share a process.
 
-**Why this design.** Lifecycle is a protocol, not vLLM APIs. The engine persists PLANNING / WORKING / REPLANNING first, then calls `ensure_role_available` — persist-then-swap. Callers that omit `services=` keep talking to already-running endpoints. `SubprocessSpawner` is replaceable; unit tests never touch a GPU.
+**Why this design.** Lifecycle is a protocol, not an engine SDK. The engine persists PLANNING / WORKING / REPLANNING first, then calls `ensure_role_available` — persist-then-swap. If `/v1/models` is already healthy, managed mode reuses that server and does not spawn a second process. Callers that omit `services=` keep talking to already-running endpoints. `SubprocessSpawner` is replaceable; unit tests never touch a GPU.
 
 **Alternatives considered.** Loading both large models at once (VRAM); mapping devices inside the serving engine instead of `CUDA_VISIBLE_DEVICES` (breaks isolation); restarting on every `ensure` (slow, unnecessary if already healthy).
 
@@ -412,7 +412,7 @@ Design record for major subsystems. Each section covers what it does, why it exi
 
 **Why it exists.** Operators need a way to create projects, inspect DAG progress, pause, and continue after a crash without a GUI.
 
-**Why this design.** `resume` loads the snapshot first (`resume_project`), unpauses only if `PAUSED`, then continues the same loop as `run`. `doctor` reports config, workspace writes, database, endpoint health, `nvidia-smi`, and launch argv — missing GPU is a warning in external mode and a failure in managed mode. `start` healthchecks all roles when external; managed mode starts only the Orchestrator and leaves Planner/Worker to persist-then-swap during `run`. `stop` pauses the project and `stop_role`s every managed process. Status prints current task, progress, last error, attempt count, configured worker model, and GPU.
+**Why this design.** `resume` loads the snapshot first (`resume_project`), unpauses only if `PAUSED`, then continues the same loop as `run`. `doctor` reports config, workspace writes, database, endpoint health, `nvidia-smi`, and launch argv — missing GPU is a warning in external mode and a failure in managed mode. `start` healthchecks every role; a live `/v1/models` is reused, otherwise managed mode spawns `llama serve`. Planner and Worker that share a device still swap during `run`. `stop` pauses the project and `stop_role`s every managed process. Status prints current task, progress, last error, attempt count, configured worker model, and GPU.
 
 **Alternatives considered.** Click/Typer (extra dependency); JSON-only output (worse for a local operator); auto-unpausing inside the store (hides operator intent).
 
@@ -420,7 +420,7 @@ Design record for major subsystems. Each section covers what it does, why it exi
 
 ### First-run setup (`src/mobyai/setup.py`, `scripts/setup.sh`)
 
-**What it does.** `scripts/setup.sh` checks Python 3.12+, creates `.venv`, installs the package, then runs `mobyai setup`. The wizard prompts for a Hugging Face token (stored at `~/MobyAI/secrets/hf_token`, never in YAML), then a runtime preset (`default` = managed dual-GPU vLLM with reference Qwen models). Every field still accepts a custom value or a CLI flag. `--non-interactive` uses those defaults plus flags. It does not download weights or start servers until `mobyai start`.
+**What it does.** `scripts/setup.sh` checks Python 3.12+, creates `.venv`, installs the package, then runs `mobyai setup`. The wizard prompts for a Hugging Face token (stored at `~/MobyAI/secrets/hf_token`, never in YAML), then a runtime preset (`default` = managed dual-GPU llama.cpp with reference Qwen GGUF specs). After the token and model ids are known it installs llama.cpp (https://llama.app), downloads each Hub GGUF into the local cache, starts each role once, and healthchecks `/v1/models`. Test processes are then stopped. `--non-interactive` uses those defaults plus flags and skips provision unless `--download-models` is set.
 
 **Why it exists.** Copying `default.yaml` and guessing search order is how first runs fail. The operator needs one explicit path from clone to `doctor`.
 

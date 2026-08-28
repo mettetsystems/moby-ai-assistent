@@ -18,12 +18,12 @@ From the repository root, run the script. It pauses after each step:
 ./scripts/setup.sh
 ```
 
-That script finds Python 3.12+, creates `.venv`, installs `mobyai`, then runs `mobyai setup`. Press Enter to keep the defaults: Hugging Face token file, managed vLLM on two GPUs, and the reference Qwen models. Type anything else to override a field.
+That script finds Python 3.12+, creates `.venv`, installs `mobyai`, then runs `mobyai setup`. Press Enter to keep the defaults: Hugging Face token, managed llama.cpp on two GPUs, and the reference Qwen GGUF models. After the token prompt, Enter installs llama.cpp, downloads those GGUF files, and healthchecks `/v1/models`. Type anything else to override a field.
 
 Non-interactive:
 
 ```bash
-./scripts/setup.sh --yes --output ./config.yaml --force
+./scripts/setup.sh --yes --output ./config.yaml --force --skip-hf-token --skip-download
 ```
 
 Equivalent without the script:
@@ -52,7 +52,7 @@ Then `source .venv/bin/activate` in every new shell.
 ## Prerequisites
 
 - Python 3.12+
-- Local OpenAI-compatible inference servers before a live `run`, **or** the default managed vLLM deployment
+- Local llama.cpp (`llama serve`) after `./scripts/setup.sh`, **or** your own OpenAI-compatible servers
 - Optional Hugging Face token (`HF_TOKEN` or `~/MobyAI/secrets/hf_token`) for gated Hub repos
 - Optional NVIDIA GPUs for managed-process mode; unit and integration tests do not require GPUs
 
@@ -71,14 +71,16 @@ mobyai --config ./config.yaml models
 
 ## Starting inference servers
 
-External mode (`mobyai setup --preset external`) expects Planner, Orchestrator, and Worker OpenAI-compatible servers already listening on the configured ports. The **setup default** is managed vLLM.
+External mode (`mobyai setup --preset external`) expects Planner, Orchestrator, and Worker OpenAI-compatible servers already listening on the configured ports. The **setup default** is managed llama.cpp.
 
 ```bash
 mobyai --config ./config.yaml doctor
 mobyai --config ./config.yaml start
 ```
 
-Managed mode (`config/examples/managed.yaml`, or `mobyai setup --mode managed`) lets MobyAI spawn isolated processes with `CUDA_VISIBLE_DEVICES` from `hardware`. Planner and Worker that share a device are swapped; they are not loaded at the same time.
+`start` healthchecks `/v1/models` first. If a role is already serving, it is reused. Otherwise managed mode spawns `llama serve`.
+
+Managed mode (`config/examples/managed.yaml`, or `mobyai setup --mode managed`) lets MobyAI spawn isolated llama.cpp processes with `CUDA_VISIBLE_DEVICES` from `hardware`. Planner and Worker that share a device are swapped; they are not loaded at the same time.
 
 ## Operator console
 

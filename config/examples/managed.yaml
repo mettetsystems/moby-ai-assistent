@@ -2,7 +2,7 @@
 # Operator walkthrough: docs/setup.md
 # First-run wizard (writes launch argv): ./scripts/setup.sh --mode managed
 #
-# MobyAI spawns isolated CUDA servers from each role's `launch` list and sets
+# MobyAI spawns isolated llama.cpp servers from each role's `launch` list and sets
 # CUDA_VISIBLE_DEVICES from hardware.<role>.device. Planner and Worker that share
 # a device are swapped; they are not loaded at the same time.
 # Use config/default.yaml instead if you already run the HTTP servers yourself.
@@ -32,7 +32,7 @@ huggingface:
 
 services:
   mode: managed
-  health_timeout_seconds: 60
+  health_timeout_seconds: 600
   health_poll_interval_seconds: 0.5
   stop_timeout_seconds: 15
   swap_shared_device: true
@@ -48,42 +48,60 @@ hardware:
 models:
   planner:
     provider: openai_compatible
-    engine: vllm
-    model: Qwen/Qwen3-32B
+    engine: llama.cpp
+    model: "Qwen/Qwen3-32B-GGUF:Q4_K_M"
     gpu: 0
     endpoint: http://127.0.0.1:9802
     quantization: q4
     kv_cache_dtype: fp8
     launch:
-      - vllm
+      - llama
       - serve
+      - -hf
       - "{model}"
+      - --host
+      - 127.0.0.1
       - --port
       - "{port}"
+      - -ngl
+      - "99"
+      - --jinja
   orchestrator:
     provider: openai_compatible
-    engine: configurable
-    model: Qwen/Qwen2.5-7B-Instruct
+    engine: llama.cpp
+    model: "Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M"
     gpu: 1
     endpoint: http://127.0.0.1:9801
     launch:
-      - vllm
+      - llama
       - serve
+      - -hf
       - "{model}"
+      - --host
+      - 127.0.0.1
       - --port
       - "{port}"
+      - -ngl
+      - "99"
+      - --jinja
   worker:
     provider: openai_compatible
-    engine: vllm
-    model: Qwen/Qwen3.5-35B-A3B
+    engine: llama.cpp
+    model: "unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M"
     gpu: 0
     endpoint: http://127.0.0.1:9800
     launch:
-      - vllm
+      - llama
       - serve
+      - -hf
       - "{model}"
+      - --host
+      - 127.0.0.1
       - --port
       - "{port}"
+      - -ngl
+      - "99"
+      - --jinja
     inference:
       tensor_parallel_size: 1
       max_model_len: 65536

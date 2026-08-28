@@ -23,6 +23,7 @@ from mobyai.engine.planning import PlanningError, plan_project
 from mobyai.engine.recovery import ProjectNotFoundError, resume_project
 from mobyai.engine.state_machine import InvalidTransitionError, ProjectStateMachine
 from mobyai.inference.huggingface import resolve_huggingface_token, token_from_file
+from mobyai.inference.llamacpp import find_llama_binary
 from mobyai.inference.service_manager import (
     RoleUnhealthyError,
     ServiceManagerError,
@@ -174,7 +175,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     setup = sub.add_parser(
         "setup",
-        help="Walk through first-time config: paths, mode, models, devices",
+        help="Walk through first-time config, install llama.cpp, pull GGUF models, and test endpoints",
     )
     setup.add_argument(
         "--output",
@@ -211,6 +212,27 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--skip-hf-token",
         action="store_true",
         help="Do not prompt for or write a Hugging Face token",
+    )
+    download = setup.add_mutually_exclusive_group()
+    download.add_argument(
+        "--download-models",
+        action="store_true",
+        help="Pull GGUF weights, install llama.cpp, and test endpoints (default in interactive setup)",
+    )
+    download.add_argument(
+        "--skip-download",
+        action="store_true",
+        help="Do not install llama.cpp, download weights, or test endpoints (default with --non-interactive)",
+    )
+    setup.add_argument(
+        "--skip-runtime",
+        action="store_true",
+        help="Do not install llama.cpp even when provisioning models",
+    )
+    setup.add_argument(
+        "--skip-endpoint-test",
+        action="store_true",
+        help="Do not spawn llama.cpp to healthcheck endpoints during setup",
     )
     setup.add_argument("--planner-model")
     setup.add_argument("--planner-endpoint")
@@ -332,6 +354,10 @@ def _cmd_setup(args: argparse.Namespace, stdout: TextIO, stdin: TextIO) -> int:
         hf_token_file=args.hf_token_file,
         skip_hf_token=args.skip_hf_token,
         preset=args.preset,
+        download_models=True if args.download_models else False if args.skip_download else None,
+        skip_download=args.skip_download,
+        skip_runtime=args.skip_runtime,
+        skip_endpoint_test=args.skip_endpoint_test,
         stdin=stdin,
         stdout=stdout,
     )
@@ -497,6 +523,9 @@ async def _cmd_doctor(runtime: Runtime, stdout: TextIO) -> int:
         if not launch:
             continue
         found = shutil.which(launch[0]) or shutil.which(Path(launch[0]).name)
+        if not found and Path(launch[0]).name in {"llama", "llama-server"}:
+            llama = find_llama_binary()
+            found = str(llama) if llama else None
         if found:
             report(True, f"{role.value} launch", found)
         elif managed:
@@ -510,22 +539,20 @@ async def _cmd_doctor(runtime: Runtime, stdout: TextIO) -> int:
 
 
 async def _cmd_start(runtime: Runtime, stdout: TextIO) -> int:
-    mode = runtime.config.services.mode
-    roles = list(AgentRole) if mode is ServiceMode.EXTERNAL else [AgentRole.ORCHESTRATOR]
     try:
-        for role in roles:
+        for role in AgentRole:
+            try:
+                already = await runtime.services.healthcheck(role)
+            except Exception:  # noqa: BLE001
+                already = False
             endpoint = await runtime.services.ensure_role_available(role)
+            status = "already running" if already else "started"
             print(
-                f"{role.value:<14} ready  {endpoint.base_url}  device={endpoint.device}",
+                f"{role.value:<14} ready  {status}  {endpoint.base_url}  device={endpoint.device}",
                 file=stdout,
             )
     except (RoleUnhealthyError, ServiceManagerError) as exc:
         raise CliError(str(exc)) from exc
-    if mode is ServiceMode.MANAGED:
-        print(
-            "planner/worker start on demand during run (shared-device swap).",
-            file=stdout,
-        )
     return 0
 
 

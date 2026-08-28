@@ -253,7 +253,7 @@ Phase 11 delivered: `mobyai` CLI (`python -m mobyai` / console script) with `ini
 
 Phase 12 delivered: fixture objective “Create a small REST API with an SQLite-backed task manager.” Scripted Planner/Worker/Orchestrator payloads in `tests/fixtures/task_manager/` drive `tests/integration/test_task_manager.py` through planning, Worker execution, harness tests, fail #1 retry, fail #2 escalate, DAG patch, continuation, and COMPLETED. SQLite reconnect after the first passed task continues without reconstructing history from chat. A CLI `init`/`run` path covers the same fixture. No GPU required.
 
-Operator setup (post-MVP): `./scripts/setup.sh` walks Python 3.12+, `.venv`, `pip install -e ".[dev]"`, then `mobyai setup`. Defaults are a Hugging Face token file, managed vLLM on two GPUs, and reference Qwen model ids; every prompt still accepts a custom value. `docs/setup.md` is the same sequence written for a human.
+Operator setup (post-MVP): `./scripts/setup.sh` walks Python 3.12+, `.venv`, `pip install -e ".[dev]"`, then `mobyai setup`. Defaults are a Hugging Face token file, managed llama.cpp on two GPUs, and reference Qwen GGUF specs; interactive setup installs llama.cpp, downloads those Hub files, and healthchecks `/v1/models`. `docs/setup.md` is the same sequence written for a human.
 
 ---
 

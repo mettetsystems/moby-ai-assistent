@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 import pytest
@@ -98,6 +99,17 @@ def _managed_payload(**overrides: object) -> dict[str, object]:
     return data
 
 
+def _health_after_spawn(config: AppConfig, spawner: RecordingSpawner):
+    def health(role: AgentRole) -> bool:
+        port = str(urlparse(config.models.for_role(role).endpoint).port)
+        for start, handle in zip(spawner.starts, spawner.handles, strict=False):
+            if port in start["argv"] and handle.poll() is None:
+                return True
+        return False
+
+    return health
+
+
 def _health_client(ok: bool) -> httpx.AsyncClient:
     def handler(_request: httpx.Request) -> httpx.Response:
         if ok:
@@ -118,8 +130,9 @@ def test_managed_example_loads() -> None:
     config = AppConfig.from_yaml(MANAGED_CONFIG)
     assert config.services.mode is ServiceMode.MANAGED
     assert "{model}" in config.models.worker.launch
-    assert render_launch(config, AgentRole.WORKER)[2] == config.models.worker.model
-    assert "9800" in render_launch(config, AgentRole.WORKER)
+    argv = render_launch(config, AgentRole.WORKER)
+    assert config.models.worker.model in argv
+    assert "9800" in argv
 
 
 def test_device_for_role_uses_hardware_not_constants() -> None:
@@ -170,7 +183,7 @@ async def test_managed_sets_cuda_visible_devices_from_config() -> None:
     config = AppConfig.model_validate(_managed_payload())
     spawner = RecordingSpawner()
     manager = GpuServiceManager(
-        config, spawner=spawner, health=lambda _role: True
+        config, spawner=spawner, health=_health_after_spawn(config, spawner)
     )
     endpoint = await manager.ensure_role_available(AgentRole.PLANNER)
     assert endpoint.managed is True
@@ -184,7 +197,7 @@ async def test_managed_isolates_orchestrator_on_other_device() -> None:
     config = AppConfig.model_validate(_managed_payload())
     spawner = RecordingSpawner()
     manager = GpuServiceManager(
-        config, spawner=spawner, health=lambda _role: True
+        config, spawner=spawner, health=_health_after_spawn(config, spawner)
     )
     await manager.ensure_role_available(AgentRole.PLANNER)
     await manager.ensure_role_available(AgentRole.ORCHESTRATOR)
@@ -197,7 +210,7 @@ async def test_persist_then_swap_stops_shared_device_occupant() -> None:
     config = AppConfig.model_validate(_managed_payload())
     spawner = RecordingSpawner()
     manager = GpuServiceManager(
-        config, spawner=spawner, health=lambda _role: True
+        config, spawner=spawner, health=_health_after_spawn(config, spawner)
     )
     await manager.ensure_role_available(AgentRole.PLANNER)
     await manager.ensure_role_available(AgentRole.WORKER)
@@ -214,7 +227,7 @@ async def test_swap_disabled_keeps_both_on_shared_device() -> None:
     )
     spawner = RecordingSpawner()
     manager = GpuServiceManager(
-        config, spawner=spawner, health=lambda _role: True
+        config, spawner=spawner, health=_health_after_spawn(config, spawner)
     )
     await manager.ensure_role_available(AgentRole.PLANNER)
     await manager.ensure_role_available(AgentRole.WORKER)
@@ -227,7 +240,7 @@ async def test_managed_does_not_respawn_healthy_process() -> None:
     config = AppConfig.model_validate(_managed_payload())
     spawner = RecordingSpawner()
     manager = GpuServiceManager(
-        config, spawner=spawner, health=lambda _role: True
+        config, spawner=spawner, health=_health_after_spawn(config, spawner)
     )
     await manager.ensure_role_available(AgentRole.WORKER)
     await manager.ensure_role_available(AgentRole.WORKER)
@@ -241,7 +254,7 @@ async def test_cpu_device_clears_cuda_visible_devices() -> None:
     config = AppConfig.model_validate(data)
     spawner = RecordingSpawner()
     manager = GpuServiceManager(
-        config, spawner=spawner, health=lambda _role: True
+        config, spawner=spawner, health=_health_after_spawn(config, spawner)
     )
     await manager.ensure_role_available(AgentRole.ORCHESTRATOR)
     assert spawner.starts[0]["env"]["CUDA_VISIBLE_DEVICES"] == ""
@@ -260,7 +273,7 @@ async def test_managed_injects_hf_token_from_file(
     config = AppConfig.model_validate(data)
     spawner = RecordingSpawner()
     manager = GpuServiceManager(
-        config, spawner=spawner, health=lambda _role: True
+        config, spawner=spawner, health=_health_after_spawn(config, spawner)
     )
     await manager.ensure_role_available(AgentRole.PLANNER)
     env = spawner.starts[0]["env"]
@@ -304,12 +317,24 @@ async def test_stop_role_terminates_managed_process() -> None:
     config = AppConfig.model_validate(_managed_payload())
     spawner = RecordingSpawner()
     manager = GpuServiceManager(
-        config, spawner=spawner, health=lambda _role: True
+        config, spawner=spawner, health=_health_after_spawn(config, spawner)
     )
     await manager.ensure_role_available(AgentRole.WORKER)
     await manager.stop_role(AgentRole.WORKER)
     assert spawner.handles[0].terminated is True
     assert manager.gpu_mode(3) is GpuServiceMode.IDLE
+    await manager.aclose()
+
+
+async def test_managed_reuses_healthy_endpoint_without_spawn() -> None:
+    config = AppConfig.model_validate(_managed_payload())
+    spawner = RecordingSpawner()
+    manager = GpuServiceManager(
+        config, spawner=spawner, health=lambda _role: True
+    )
+    endpoint = await manager.ensure_role_available(AgentRole.WORKER)
+    assert endpoint.managed is True
+    assert spawner.starts == []
     await manager.aclose()
 
 
