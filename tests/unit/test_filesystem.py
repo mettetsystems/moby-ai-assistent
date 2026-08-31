@@ -77,6 +77,23 @@ async def test_list_and_search(tmp_path: Path) -> None:
     assert "src/a.py" in tree
 
 
+async def test_glob_files(tmp_path: Path) -> None:
+    _space, files = _workspace(tmp_path)
+    await files.write_file("src/a.py", "a = 1\n")
+    await files.write_file("src/nested/b.py", "b = 2\n")
+    await files.write_file("src/skip.txt", "nope\n")
+    matches = await files.glob_files("**/*.py")
+    assert matches == ["src/a.py", "src/nested/b.py"]
+    nested = await files.glob_files("*.py", "src/nested")
+    assert nested == ["src/nested/b.py"]
+
+
+async def test_glob_rejects_parent_pattern(tmp_path: Path) -> None:
+    _space, files = _workspace(tmp_path)
+    with pytest.raises(PathEscapeError):
+        await files.glob_files("../secret.py")
+
+
 async def test_missing_file(tmp_path: Path) -> None:
     _space, files = _workspace(tmp_path)
     with pytest.raises(WorkspaceError, match="not found"):

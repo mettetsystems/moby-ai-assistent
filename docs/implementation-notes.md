@@ -124,7 +124,7 @@ Design record for major subsystems. Each section covers what it does, why it exi
 
 ### Filesystem and patches (`filesystem.py`, `patches.py`)
 
-**What they do.** `read_file` / `write_file` / `list_directory` / `search_code` stay inside the jail. Writes are atomic (`tmp` + replace). `apply_patch` accepts unified diffs, creates/modifies/deletes single files, and rejects non-relative headers.
+**What they do.** `read_file` / `write_file` / `list_directory` / `search_code` / `glob` stay inside the jail. `read_file` as a tool may take `start_line`/`end_line` or `offset`/`limit` so large files are not silently trimmed at ~4000 tokens. Writes are atomic (`tmp` + replace). `apply_patch` accepts unified diffs, creates/modifies/deletes single files, and rejects non-relative headers.
 
 **Why they exist.** The Worker must not dump file bodies through chat. The harness applies structured tool requests.
 
@@ -180,15 +180,15 @@ Design record for major subsystems. Each section covers what it does, why it exi
 
 ### Planner agent (`src/mobyai/agents/planner.py`)
 
-**What it does.** Builds a Planner prompt from the objective and existing workspace paths, asks the model for `PlannerOutput`, then runs deterministic checks: non-empty DAG, cycles/missing deps, required `acceptance_criteria` and `test_commands`, project-relative paths only. Invalid JSON is handled by `StructuredGenerator`. Invalid DAGs get a bounded repair turn quoting the validator error.
+**What it does.** Builds a Planner prompt from the objective and existing workspace paths, asks the model for a `PlannerTurn` (read-only `inspect_calls` or a nested `PlannerOutput`), then runs deterministic checks: non-empty DAG, cycles/missing deps, required `acceptance_criteria` and `test_commands`, project-relative paths only. Invalid JSON is handled by `StructuredGenerator`. Invalid DAGs get a bounded repair turn quoting the validator error. Flat `PlannerOutput` JSON still validates (the turn model lifts it).
 
 **Why it exists.** The Planner is the architect, not the implementer. The harness must reject giant or cyclic plans before any Worker runs.
 
-**Why this design.** The agent returns a validated `PlannerOutput` and does not touch SQLite or `ProjectState`. That keeps “models propose, application disposes.” Directory scaffolding is empty dirs/parents only — no application source files.
+**Why this design.** The agent returns a validated `PlannerOutput` and does not touch SQLite or `ProjectState`. That keeps “models propose, application disposes.” Directory scaffolding is empty dirs/parents only — no application source files. Inspect uses the same `ToolDispatcher` with `PLANNER_INSPECT_TOOLS` so there is one jail and no mutating tools on this role.
 
-**Alternatives considered.** Letting the model mark tasks `ready` (dependency logic is code); creating stub source files during planning (Worker’s job); regenerating the whole plan on any schema hiccup without DAG-specific repair.
+**Alternatives considered.** Letting the model mark tasks `ready` (dependency logic is code); creating stub source files during planning (Worker’s job); regenerating the whole plan on any schema hiccup without DAG-specific repair; a local MCP server for inspect (duplicates the dispatcher and risks a second write path).
 
-**How to replace.** Swap prompts in `agents/prompts/planner.py`. Add extra atomicity heuristics in `validate_planner_output` without changing the engine loop.
+**How to replace.** Swap prompts in `agents/prompts/planner.py`. Add extra atomicity heuristics in `validate_planner_output` without changing the engine loop. Keep inspect allowlisted; do not give the Planner `write_file` or `run_command`.
 
 ### Planning loop (`src/mobyai/engine/planning.py`)
 
@@ -196,9 +196,9 @@ Design record for major subsystems. Each section covers what it does, why it exi
 
 **Why it exists.** Crash during a long planner call must not look like NEW again with a half-written DAG. Persistence happens around the model, not inside it.
 
-**Why this design.** Inspect-then-plan uses `list_tree` so the model sees existing files. The Worker is not called.
+**Why this design.** Inspect-then-plan still includes `list_tree` so the model sees existing paths. A bounded inspect loop (`runtime.max_planner_inspect_turns`, default 3) can then `read_file` / `search_code` / `glob` through the same dispatcher. The Worker is not called. The Orchestrator stays tool-less.
 
-**Alternatives considered.** Planning without persisting PLANNING first (loses crash recovery); auto-running the first Worker task (Phase 7).
+**Alternatives considered.** Planning without persisting PLANNING first (loses crash recovery); auto-running the first Worker task (Phase 7); giving the Planner mutating tools or a local MCP server.
 
 **How to replace.** Phase 9 added `replan_project` for failed-branch patches. Keep `plan_project` for greenfield objectives; do not reuse it to rewrite a live DAG.
 
@@ -242,6 +242,18 @@ Design record for major subsystems. Each section covers what it does, why it exi
 
 **How to replace.** Keep `WorkerContext` as the contract. Phase 7 consumes `render()` / `files` rather than rebuilding packing rules inside the Worker agent.
 
+### Module contracts (`src/mobyai/context/contracts.py`)
+
+**What they do.** After harness tests PASS, Python parses changed `.py` files with `ast` and upserts a public surface (functions, classes, dataclass/BaseModel fields) into SQLite `module_contracts`. The next Worker packer substitutes that text for one-hop `FileRole.IMPORT` bodies (`[contract]`). The Planner prompt lists the same rows. The Worker does not write an SBOM.
+
+**Why they exist.** Full neighbor source is the usual context waste on later DAG tasks. Signatures and I/O field names are enough to call a passed module; implementation stays on disk for `read_file`.
+
+**Why this design.** Extraction runs only on the PASS path (`TASK_COMPLETION`). Syntax errors leave the previous row. `required_context` and current `target_files` stay full. `context.prefer_import_contracts` (default true) can fall back to full imports.
+
+**Alternatives considered.** Worker-appended SBOM.md (unbounded rot, model-owned memory); SPDX/CycloneDX (packages, not call surfaces); packing every import body forever.
+
+**How to replace.** Change the extractor; keep SQLite as the source of truth. Do not add a Worker tool that writes contracts.
+
 ---
 
 ## Phase 7 — Worker and safe artifact application
@@ -268,7 +280,7 @@ Design record for major subsystems. Each section covers what it does, why it exi
 
 **Alternatives considered.** Giving the model a shell (`/bin/sh -c`); writing files from chat when `tool_calls` is empty; stopping the whole project on a single tool error (report and continue so later calls can still run).
 
-**How to replace.** Add tools by extending `WorkerToolName` and `_dispatch`. Do not parse a free-form command line through a shell.
+**How to replace.** Add tools by extending `WorkerToolName` and `_dispatch`. Do not parse a free-form command line through a shell. Do not add a local MCP server: Planner inspect and Worker mutation must keep sharing this dispatcher so the jail, tests, and SQLite remain the only write path.
 
 ### Task execution loop (`src/mobyai/engine/working.py`)
 
@@ -368,7 +380,7 @@ Design record for major subsystems. Each section covers what it does, why it exi
 
 ### Service config (`src/mobyai/models/config.py`)
 
-**What it does.** `services.mode` is `external` or `managed`. Timeouts cover health polling and process stop. `swap_shared_device` (default true) unloads the other occupant of the same configured device. Per-role `launch` is an argv list with `{model}` / `{port}` / `{endpoint}` / `{device}` placeholders.
+**What it does.** `services.mode` is `external` or `managed`. Timeouts cover health polling and process stop. `swap_shared_device` (default true) unloads the other occupant of the same configured device. Per-role `launch` is an argv list with `{model}` / `{port}` / `{ctx}` / `{endpoint}` / `{device}` placeholders. `{ctx}` comes from `inference.max_model_len` (Planner 32768, Orchestrator 16384, Worker 65536). Managed llama.cpp launch also sets flash attention, q8_0 KV cache, and `--parallel 1`.
 
 **Why it exists.** Hardware, ports, and engines must stay in YAML. The application must not hard-code GPU 0/1.
 

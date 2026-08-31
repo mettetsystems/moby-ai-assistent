@@ -94,6 +94,46 @@ class WorkspaceFilesystem:
 
         return await asyncio.to_thread(_search)
 
+    async def glob_files(
+        self,
+        pattern: str,
+        path: str = ".",
+        *,
+        max_hits: int = 100,
+    ) -> list[str]:
+        if not pattern or not str(pattern).strip():
+            raise WorkspaceError("glob pattern must be non-empty")
+        compiled = str(pattern).strip()
+        probe = Path(compiled)
+        if probe.is_absolute() or ".." in probe.parts:
+            raise PathEscapeError(f"Path escapes workspace: {pattern}")
+        root = self.workspace.resolve(path, must_exist=True)
+        if not root.is_dir():
+            raise WorkspaceError(f"Not a directory: {path}")
+        limit = max(max_hits, 1)
+
+        def _glob() -> list[str]:
+            matches: list[str] = []
+            try:
+                found = root.glob(compiled)
+            except ValueError as exc:
+                raise WorkspaceError(f"Invalid glob pattern: {pattern}") from exc
+            for item in sorted(found, key=lambda candidate: candidate.as_posix()):
+                if any(part in _SKIP_DIR_NAMES for part in item.parts):
+                    continue
+                try:
+                    resolved = item.resolve()
+                except OSError:
+                    continue
+                if not resolved.is_file() or not self.workspace.contains(resolved):
+                    continue
+                matches.append(self.workspace.relative(resolved))
+                if len(matches) >= limit:
+                    break
+            return matches
+
+        return await asyncio.to_thread(_glob)
+
     async def list_tree(self, path: str = ".", *, max_entries: int = 200) -> list[str]:
         target = self.workspace.resolve(path, must_exist=True)
         if not target.is_dir():

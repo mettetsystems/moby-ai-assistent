@@ -7,7 +7,7 @@ from mobyai.execution.commands import CommandRunner
 from mobyai.execution.errors import WorkspaceError
 from mobyai.execution.filesystem import WorkspaceFilesystem
 from mobyai.execution.tests import TestRunner
-from mobyai.execution.tools import ToolDispatcher, split_command
+from mobyai.execution.tools import PLANNER_INSPECT_TOOLS, ToolDispatcher, split_command
 from mobyai.execution.workspace import Workspace
 from mobyai.models.worker import WorkerToolCall, WorkerToolName
 
@@ -140,3 +140,105 @@ async def test_missing_arguments_fail_without_writes(tmp_path: Path) -> None:
     assert outcome.ok is False
     with pytest.raises(WorkspaceError):
         await files.read_file("src/app.py")
+
+
+async def test_read_file_line_range(tmp_path: Path) -> None:
+    _space, files, dispatcher = _dispatcher(tmp_path)
+    await files.write_file("src/app.py", "one\ntwo\nthree\nfour\n")
+    ranged = await dispatcher.execute(
+        WorkerToolCall(
+            name=WorkerToolName.READ_FILE,
+            arguments={"path": "src/app.py", "start_line": 2, "end_line": 3},
+        )
+    )
+    assert ranged.ok
+    assert "# lines 2-3 of 4" in ranged.output
+    body = ranged.output.split("\n", 1)[1]
+    assert "two" in body
+    assert "three" in body
+    assert "one" not in body
+    assert "four" not in body
+    limited = await dispatcher.execute(
+        WorkerToolCall(
+            name=WorkerToolName.READ_FILE,
+            arguments={"path": "src/app.py", "offset": 3, "limit": 1},
+        )
+    )
+    assert limited.ok
+    assert "three\n" in limited.output
+    assert "four" not in limited.output
+
+
+async def test_read_file_invalid_range(tmp_path: Path) -> None:
+    _space, files, dispatcher = _dispatcher(tmp_path)
+    await files.write_file("src/app.py", "one\ntwo\n")
+    outcome = await dispatcher.execute(
+        WorkerToolCall(
+            name=WorkerToolName.READ_FILE,
+            arguments={"path": "src/app.py", "start_line": 0},
+        )
+    )
+    assert outcome.ok is False
+    assert "start_line" in (outcome.error or "")
+
+
+async def test_glob_and_find_files(tmp_path: Path) -> None:
+    _space, files, dispatcher = _dispatcher(tmp_path)
+    await files.write_file("src/app.py", "x = 1\n")
+    await files.write_file("src/util.py", "x = 2\n")
+    await files.write_file("README.md", "hi\n")
+    found = await dispatcher.execute(
+        WorkerToolCall(
+            name=WorkerToolName.GLOB,
+            arguments={"pattern": "**/*.py", "path": "."},
+        )
+    )
+    assert found.ok
+    assert "src/app.py" in found.output
+    assert "src/util.py" in found.output
+    assert "README.md" not in found.output
+    aliased = await dispatcher.execute(
+        WorkerToolCall(
+            name=WorkerToolName.FIND_FILES,
+            arguments={"pattern": "*.md"},
+        )
+    )
+    assert aliased.ok
+    assert "README.md" in aliased.output
+
+
+async def test_read_file_truncation_hints_at_ranges(tmp_path: Path) -> None:
+    _space, files, dispatcher = _dispatcher(tmp_path)
+    await files.write_file("src/big.py", "x" * 20000)
+    read = await dispatcher.execute(
+        WorkerToolCall(name=WorkerToolName.READ_FILE, arguments={"path": "src/big.py"})
+    )
+    assert read.ok
+    assert "truncated" in read.output.lower()
+    assert "start_line" in read.output
+
+
+async def test_glob_escape_is_rejected(tmp_path: Path) -> None:
+    _space, _files, dispatcher = _dispatcher(tmp_path)
+    outcome = await dispatcher.execute(
+        WorkerToolCall(
+            name=WorkerToolName.GLOB,
+            arguments={"pattern": "../secret.py"},
+        )
+    )
+    assert outcome.ok is False
+    assert "escape" in (outcome.error or "").lower()
+
+
+async def test_planner_allowlist_blocks_writes(tmp_path: Path) -> None:
+    _space, _files, dispatcher = _dispatcher(tmp_path)
+    outcome = await dispatcher.execute(
+        WorkerToolCall(
+            name=WorkerToolName.WRITE_FILE,
+            arguments={"path": "src/app.py", "contents": "nope\n"},
+        ),
+        allowed=PLANNER_INSPECT_TOOLS,
+    )
+    assert outcome.ok is False
+    assert "not allowed" in (outcome.error or "")
+    assert not (tmp_path / "project" / "src" / "app.py").exists()

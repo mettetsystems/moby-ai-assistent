@@ -221,7 +221,7 @@ fi
 step "5/6  Write YAML, install llama.cpp, pull models, test endpoints (mobyai setup)"
 log "Defaults: Hugging Face token -> ~/MobyAI/secrets/hf_token"
 log "          managed llama.cpp, GPU 0 planner+worker, GPU 1 orchestrator"
-log "          Qwen/Qwen3-32B-GGUF:Q4_K_M, Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M,"
+log "          Qwen/Qwen3-32B-GGUF:Q4_K_M, Qwen/Qwen2.5-7B-Instruct-GGUF:Q5_K_M,"
 log "          unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M"
 log "After the token prompt, Enter installs llama.cpp, downloads GGUF files, and healthchecks."
 log "Press Enter to keep a default, or type a custom model / endpoint / device."

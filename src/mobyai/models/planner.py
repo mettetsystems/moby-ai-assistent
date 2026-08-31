@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from enum import StrEnum
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from mobyai.models.task import Task
 
@@ -61,3 +64,86 @@ class DAGPatch(BaseModel):
     directory_structure: list[str] = Field(default_factory=list)
     supersede: list[TaskSupersede] = Field(min_length=1)
     add_tasks: list[PlannerTaskSpec] = Field(default_factory=list)
+
+
+class PlannerInspectToolName(StrEnum):
+    """Read-only tools the Planner may request. Writes stay on the Worker path."""
+
+    READ_FILE = "read_file"
+    LIST_DIRECTORY = "list_directory"
+    SEARCH_CODE = "search_code"
+    GLOB = "glob"
+    FIND_FILES = "find_files"
+
+
+class PlannerInspectCall(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: PlannerInspectToolName
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlannerTurn(BaseModel):
+    """One Planner generate: read-only inspect, or a full plan."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    inspect_calls: list[PlannerInspectCall] = Field(default_factory=list)
+    plan: PlannerOutput | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def lift_flat_plan(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if "plan" in data:
+            return data
+        inspect = data.get("inspect_calls")
+        has_inspect = isinstance(inspect, list) and len(inspect) > 0
+        if has_inspect and "tasks" not in data:
+            return data
+        if "tasks" in data and "project_name" in data:
+            rest = {key: value for key, value in data.items() if key != "inspect_calls"}
+            if has_inspect:
+                return {"inspect_calls": inspect, "plan": None}
+            return {"inspect_calls": [], "plan": rest}
+        return data
+
+    @model_validator(mode="after")
+    def require_inspect_or_plan(self) -> PlannerTurn:
+        if not self.inspect_calls and self.plan is None:
+            raise ValueError("PlannerTurn requires inspect_calls or a plan")
+        return self
+
+
+class PlannerPatchTurn(BaseModel):
+    """One replan generate: read-only inspect, or a DAG patch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    inspect_calls: list[PlannerInspectCall] = Field(default_factory=list)
+    patch: DAGPatch | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def lift_flat_patch(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if "patch" in data:
+            return data
+        inspect = data.get("inspect_calls")
+        has_inspect = isinstance(inspect, list) and len(inspect) > 0
+        if has_inspect and "supersede" not in data:
+            return data
+        if "supersede" in data and "summary" in data:
+            rest = {key: value for key, value in data.items() if key != "inspect_calls"}
+            if has_inspect:
+                return {"inspect_calls": inspect, "patch": None}
+            return {"inspect_calls": [], "patch": rest}
+        return data
+
+    @model_validator(mode="after")
+    def require_inspect_or_patch(self) -> PlannerPatchTurn:
+        if not self.inspect_calls and self.patch is None:
+            raise ValueError("PlannerPatchTurn requires inspect_calls or a patch")
+        return self

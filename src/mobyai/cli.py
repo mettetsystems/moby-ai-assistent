@@ -681,6 +681,7 @@ async def _execute_project(
             command_timeout_seconds=runtime.config.runtime.command_timeout_seconds,
             planner=runtime.planner,
             services=runtime.services,
+            prefer_import_contracts=runtime.config.context.prefer_import_contracts,
         )
     except OrchestrationError as exc:
         raise CliError(str(exc)) from exc

@@ -22,10 +22,12 @@ runtime:
   max_schema_repair_attempts: 2
   inference_timeout_seconds: 120
   max_worker_turns: 8
+  max_planner_inspect_turns: 3
 
 context:
   worker_token_budget: 48000
   log_tail_lines: 150
+  prefer_import_contracts: true
 
 persistence:
   # Crash recovery. mobyai resume reloads this file, not a chat transcript.

@@ -178,8 +178,19 @@ async def test_setup_managed_includes_launch_argv(tmp_path: Path) -> None:
     assert config.services.mode is ServiceMode.MANAGED
     assert "{model}" in config.models.planner.launch
     assert "{port}" in config.models.planner.launch
+    assert "{ctx}" in config.models.planner.launch
     assert config.models.planner.launch[0] == "llama"
     assert "-hf" in config.models.planner.launch
+    assert "--ctx-size" in config.models.planner.launch
+    assert "--flash-attn" in config.models.planner.launch
+    assert "--parallel" in config.models.planner.launch
+    assert config.models.planner.inference is not None
+    assert config.models.planner.inference.max_model_len == 32768
+    assert config.models.orchestrator.inference is not None
+    assert config.models.orchestrator.inference.max_model_len == 16384
+    assert config.models.worker.inference is not None
+    assert config.models.worker.inference.max_model_len == 65536
+    assert config.models.worker.inference.gpu_memory_utilization is None
     assert "WARNING" in out
     assert "Hugging Face token" in out or "no Hugging Face token" in out
 

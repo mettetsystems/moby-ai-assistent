@@ -14,6 +14,9 @@ Rules:
 - Dependencies must refer to other task_id values in this plan.
 - Paths must be project-relative (no .., no absolute paths).
 - Prefer creating tests alongside implementation tasks.
+- You may inspect an existing workspace with read-only inspect_calls first
+  (read_file, list_directory, search_code, glob). You cannot write files,
+  run tests, or run commands. After a few inspect turns, return a full plan.
 - Return ONLY JSON that matches the required schema. No markdown. No explanation.
 """
 
@@ -26,7 +29,20 @@ Objective:
 Existing workspace paths (may be empty):
 {existing_paths}
 
-Produce a PlannerOutput JSON object with this shape:
+Module contracts from passed tasks (public surfaces; may be empty):
+{module_contracts}
+
+You may return inspect_calls to read the workspace before planning:
+{{
+  "inspect_calls": [
+    {{"name": "glob", "arguments": {{"pattern": "**/*.py"}}}},
+    {{"name": "read_file", "arguments": {{"path": "src/app.py", "start_line": 1, "end_line": 80}}}},
+    {{"name": "search_code", "arguments": {{"pattern": "class ", "path": "src"}}}},
+    {{"name": "list_directory", "arguments": {{"path": "src"}}}}
+  ]
+}}
+
+Or produce a PlannerOutput JSON object with this shape:
 {{
   "project_name": "string",
   "architecture_summary": "string",
@@ -72,6 +88,8 @@ Rules:
 - Every new task MUST include acceptance_criteria and test_commands.
 - Paths must be project-relative (no .., no absolute paths).
 - Prefer the smallest patch that unblocks the branch.
+- You may inspect the workspace with read-only inspect_calls first
+  (read_file, list_directory, search_code, glob). You cannot write files.
 - Return ONLY JSON that matches DAGPatch. No markdown. No explanation.
 """
 
@@ -103,7 +121,11 @@ Current DAG (do not rewrite PASSED tasks):
 Existing workspace paths (may be empty):
 {existing_paths}
 
-Return a DAGPatch JSON object with this shape:
+Module contracts from passed tasks (public surfaces; may be empty):
+{module_contracts}
+
+You may return inspect_calls (read_file, list_directory, search_code, glob)
+before the patch. When ready, return a DAGPatch JSON object with this shape:
 {{
   "summary": "why this branch patch unblocks work",
   "architecture_summary": null,
@@ -138,4 +160,36 @@ The JSON parsed but the DAG patch was rejected by deterministic validation:
 Return a corrected full DAGPatch JSON only. Supersede the failed task. \
 Do not touch PASSED tasks. Every new task needs acceptance_criteria and \
 test_commands. Do not include markdown or explanation.
+"""
+
+INSPECT_FEEDBACK_PROMPT = """\
+Read-only inspect results from the harness (the workspace was not modified):
+
+{results}
+
+Inspect turns remaining: {remaining}.
+If you have enough context, return a full PlannerOutput JSON (no inspect_calls).
+Otherwise return more inspect_calls using only read_file, list_directory, search_code, or glob.
+"""
+
+INSPECT_DONE_PROMPT = """\
+Inspect is finished or unavailable. Return a full PlannerOutput JSON only.
+Do not include inspect_calls. Keep tasks atomic. Every task needs
+acceptance_criteria and test_commands. Do not include markdown or explanation.
+"""
+
+PATCH_INSPECT_FEEDBACK_PROMPT = """\
+Read-only inspect results from the harness (the workspace was not modified):
+
+{results}
+
+Inspect turns remaining: {remaining}.
+If you have enough context, return a DAGPatch JSON (no inspect_calls).
+Otherwise return more inspect_calls using only read_file, list_directory, search_code, or glob.
+"""
+
+PATCH_INSPECT_DONE_PROMPT = """\
+Inspect is finished or unavailable. Return a DAGPatch JSON only.
+Supersede the failed task. Do not touch PASSED tasks. Every new task needs
+acceptance_criteria and test_commands. Do not include markdown or explanation.
 """

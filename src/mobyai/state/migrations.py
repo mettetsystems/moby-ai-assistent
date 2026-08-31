@@ -85,7 +85,23 @@ CREATE INDEX IF NOT EXISTS idx_events_project_timestamp
     ON events (project_id, timestamp);
 """
 
-MIGRATIONS: tuple[tuple[int, str], ...] = ((1, SCHEMA_V1),)
+SCHEMA_V2 = """
+CREATE TABLE IF NOT EXISTS module_contracts (
+    project_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    rendered TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, path),
+    FOREIGN KEY (project_id) REFERENCES projects(project_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_module_contracts_project
+    ON module_contracts (project_id, path);
+"""
+
+MIGRATIONS: tuple[tuple[int, str], ...] = ((1, SCHEMA_V1), (2, SCHEMA_V2))
 
 
 def apply_migrations(connection: sqlite3.Connection) -> None:

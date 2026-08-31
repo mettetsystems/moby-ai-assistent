@@ -7,7 +7,12 @@ from datetime import UTC, datetime
 from mobyai.agents.planner import PlanValidationError, PlannerAgent
 from mobyai.dag.graph import TaskGraph
 from mobyai.dag.patch import apply_dag_patch
-from mobyai.engine.planning import _existing_paths, _scaffold_directories
+from mobyai.engine.planning import (
+    _existing_paths,
+    _inspector,
+    _module_contract_listings,
+    _scaffold_directories,
+)
 from mobyai.engine.state_machine import ProjectStateMachine
 from mobyai.execution.workspace import Workspace
 from mobyai.inference.base import InferenceError, SchemaRepairExhaustedError
@@ -65,6 +70,7 @@ async def replan_project(
     loaded = package or await load_escalation_package(store, project.project_id)
     tasks = await store.tasks.list_for_project(project.project_id)
     existing_paths = await _existing_paths(workspace)
+    module_contracts = await _module_contract_listings(store, project.project_id)
     try:
         if services is not None:
             await services.ensure_role_available(AgentRole.PLANNER)
@@ -74,6 +80,8 @@ async def replan_project(
             tasks=tasks,
             package=loaded,
             existing_paths=existing_paths,
+            inspector=_inspector(workspace),
+            module_contracts=module_contracts,
         )
     except _REPLAN_FAILURES as exc:
         failed = ProjectStateMachine.transition(

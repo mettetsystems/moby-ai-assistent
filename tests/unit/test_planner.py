@@ -10,6 +10,7 @@ from mobyai.inference.fake import FakeInferenceProvider, FakeInferenceServiceMan
 from mobyai.inference.structured import StructuredGenerator
 from mobyai.models.checkpoint import CheckpointKind
 from mobyai.models.config import AgentRole
+from mobyai.models.contract import ModuleContract
 from mobyai.models.planner import PlannerOutput
 from mobyai.models.project import ProjectState
 from mobyai.models.task import TaskStatus
@@ -65,10 +66,15 @@ def _agent(
     *,
     json_repairs: int = 2,
     plan_repairs: int = 2,
+    max_inspect_turns: int = 3,
 ) -> tuple[FakeInferenceProvider, PlannerAgent]:
     provider = FakeInferenceProvider(responses)
     generator = StructuredGenerator(provider, max_repair_attempts=json_repairs)
-    return provider, PlannerAgent(generator, max_plan_repairs=plan_repairs)
+    return provider, PlannerAgent(
+        generator,
+        max_plan_repairs=plan_repairs,
+        max_inspect_turns=max_inspect_turns,
+    )
 
 
 def test_validate_planner_output_rejects_cycle() -> None:
@@ -213,3 +219,82 @@ async def test_plan_project_fails_when_planner_service_unhealthy() -> None:
     assert stored is not None
     assert stored.state == ProjectState.FAILED
     assert services.ensured == [AgentRole.PLANNER]
+
+
+async def test_plan_project_inspects_then_plans(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path / "project")
+    workspace.ensure_root()
+    (workspace.root / "src").mkdir()
+    (workspace.root / "src" / "legacy.py").write_text(
+        "LEGACY_MARKER = 1\n", encoding="utf-8"
+    )
+    inspect = {
+        "inspect_calls": [
+            {"name": "read_file", "arguments": {"path": "src/legacy.py"}},
+            {"name": "glob", "arguments": {"pattern": "**/*.py"}},
+        ]
+    }
+    provider, agent = _agent([json.dumps(inspect), json.dumps(VALID_PLAN)])
+    store = InMemoryStateStore()
+    project = make_project(workspace_root=workspace.root)
+    await store.projects.save(project)
+
+    ready, plan = await plan_project(
+        project, store, agent, workspace=workspace, now=FROZEN_NOW
+    )
+
+    assert ready.state == ProjectState.READY
+    assert plan.tasks[0].task_id == "STEP_001"
+    assert len(provider.requests) == 2
+    feedback = provider.requests[1].messages[-1].content
+    assert "LEGACY_MARKER" in feedback
+    assert "src/legacy.py" in feedback
+    assert (workspace.root / "src" / "legacy.py").read_text(
+        encoding="utf-8"
+    ) == "LEGACY_MARKER = 1\n"
+
+
+async def test_plan_project_inspect_budget_then_plans(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path / "project")
+    workspace.ensure_root()
+    inspect = {
+        "inspect_calls": [{"name": "list_directory", "arguments": {"path": "."}}]
+    }
+    provider, agent = _agent(
+        [json.dumps(inspect), json.dumps(inspect), json.dumps(VALID_PLAN)],
+        max_inspect_turns=1,
+    )
+    store = InMemoryStateStore()
+    project = make_project(workspace_root=workspace.root)
+    await store.projects.save(project)
+
+    ready, plan = await plan_project(
+        project, store, agent, workspace=workspace, now=FROZEN_NOW
+    )
+
+    assert ready.state == ProjectState.READY
+    assert plan.project_name == "example_app"
+    assert len(provider.requests) == 3
+    assert "inspect is finished" in provider.requests[2].messages[-1].content.lower()
+
+
+async def test_plan_project_includes_module_contracts_in_prompt(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path / "project")
+    workspace.ensure_root()
+    store = InMemoryStateStore()
+    project = make_project(workspace_root=workspace.root)
+    await store.projects.save(project)
+    await store.contracts.upsert(
+        ModuleContract(
+            project_id=project.project_id,
+            path="src/db.py",
+            task_id="STEP_000",
+            rendered="src/db.py\ndef connect() -> int",
+            payload={"functions": [{"name": "connect", "args": [], "returns": "int"}]},
+            updated_at=FROZEN_NOW,
+        )
+    )
+    provider, agent = _agent([json.dumps(VALID_PLAN)])
+    await plan_project(project, store, agent, workspace=workspace, now=FROZEN_NOW)
+    user_text = provider.requests[0].messages[1].content
+    assert "def connect() -> int" in user_text

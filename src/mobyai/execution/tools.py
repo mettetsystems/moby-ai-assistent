@@ -19,6 +19,19 @@ from mobyai.execution.workspace import Workspace
 from mobyai.models.worker import WorkerToolCall, WorkerToolName
 
 _OUTPUT_TOKEN_BUDGET = 4000
+_RANGE_HINT = (
+    "\n# truncated at ~4000 tokens; use start_line and end_line (or limit) to read a range"
+)
+
+PLANNER_INSPECT_TOOLS: frozenset[WorkerToolName] = frozenset(
+    {
+        WorkerToolName.READ_FILE,
+        WorkerToolName.LIST_DIRECTORY,
+        WorkerToolName.SEARCH_CODE,
+        WorkerToolName.GLOB,
+        WorkerToolName.FIND_FILES,
+    }
+)
 
 
 class ToolOutcome(BaseModel):
@@ -49,10 +62,37 @@ class ToolDispatcher:
         self._tests = tests
         self._timeout_seconds = timeout_seconds
 
-    async def execute_all(self, calls: Sequence[WorkerToolCall]) -> list[ToolOutcome]:
-        return [await self.execute(call) for call in calls]
+    @classmethod
+    def from_workspace(
+        cls, workspace: Workspace, *, timeout_seconds: int = 600
+    ) -> ToolDispatcher:
+        filesystem = WorkspaceFilesystem(workspace)
+        commands = CommandRunner(workspace)
+        tests = TestRunner(commands, workspace)
+        return cls(
+            filesystem, workspace, commands, tests, timeout_seconds=timeout_seconds
+        )
 
-    async def execute(self, call: WorkerToolCall) -> ToolOutcome:
+    async def execute_all(
+        self,
+        calls: Sequence[WorkerToolCall],
+        *,
+        allowed: frozenset[WorkerToolName] | None = None,
+    ) -> list[ToolOutcome]:
+        return [await self.execute(call, allowed=allowed) for call in calls]
+
+    async def execute(
+        self,
+        call: WorkerToolCall,
+        *,
+        allowed: frozenset[WorkerToolName] | None = None,
+    ) -> ToolOutcome:
+        if allowed is not None and call.name not in allowed:
+            return ToolOutcome(
+                name=call.name,
+                ok=False,
+                error=f"{call.name.value} is not allowed for this agent",
+            )
         try:
             return await self._dispatch(call.name, call.arguments)
         except WorkspaceError as exc:
@@ -70,7 +110,7 @@ class ToolDispatcher:
         if name is WorkerToolName.READ_FILE:
             path = _require_str(arguments, "path")
             content = await self._filesystem.read_file(path)
-            return ToolOutcome(name=name, ok=True, output=_trim(content))
+            return ToolOutcome(name=name, ok=True, output=_read_output(content, arguments))
         if name is WorkerToolName.WRITE_FILE:
             path = _require_str(arguments, "path")
             contents = _require_str(arguments, "contents", allow_empty=True)
@@ -96,6 +136,12 @@ class ToolDispatcher:
             hits = await self._filesystem.search_code(pattern, path, max_hits=max_hits)
             lines = [f"{hit.path}:{hit.line_number}:{hit.line}" for hit in hits]
             return ToolOutcome(name=name, ok=True, output=_trim("\n".join(lines)))
+        if name in {WorkerToolName.GLOB, WorkerToolName.FIND_FILES}:
+            pattern = _require_str(arguments, "pattern")
+            path = _optional_str(arguments, "path") or "."
+            max_hits = _optional_int(arguments, "max_hits") or 100
+            matches = await self._filesystem.glob_files(pattern, path, max_hits=max_hits)
+            return ToolOutcome(name=name, ok=True, output="\n".join(matches))
         if name is WorkerToolName.RUN_TEST:
             command = split_command(arguments.get("command"))
             result = await self._tests.run(command, timeout_seconds=self._timeout_seconds)
@@ -178,6 +224,59 @@ def _patch_text(arguments: Mapping[str, Any]) -> str:
         if key in arguments:
             return _require_str(arguments, key)
     raise ValueError("apply_patch requires diff")
+
+
+def _read_output(content: str, arguments: Mapping[str, Any]) -> str:
+    start_line = _optional_int(arguments, "start_line")
+    if start_line is None:
+        start_line = _optional_int(arguments, "offset")
+    end_line = _optional_int(arguments, "end_line")
+    limit = _optional_int(arguments, "limit")
+    ranged = start_line is not None or end_line is not None or limit is not None
+    if ranged:
+        body, header = _slice_lines(
+            content, start_line=start_line, end_line=end_line, limit=limit
+        )
+        payload = f"{header}\n{body}"
+    else:
+        payload = content
+    trimmed, truncated = truncate_to_tokens(payload, _OUTPUT_TOKEN_BUDGET)
+    if truncated:
+        return trimmed + _RANGE_HINT
+    return trimmed
+
+
+def _slice_lines(
+    text: str,
+    *,
+    start_line: int | None,
+    end_line: int | None,
+    limit: int | None,
+) -> tuple[str, str]:
+    lines = text.splitlines(keepends=True)
+    total = len(lines)
+    start = 1 if start_line is None else start_line
+    if start < 1:
+        raise ValueError("start_line must be >= 1")
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be >= 1")
+    if end_line is None:
+        end = start + limit - 1 if limit is not None else max(total, start)
+    else:
+        if end_line < 1:
+            raise ValueError("end_line must be >= 1")
+        end = end_line
+        if limit is not None:
+            end = min(end, start + limit - 1)
+    if end < start:
+        raise ValueError("end_line must be >= start_line")
+    if total == 0 or start > total:
+        return "", f"# lines {start}-{end} of {total} (empty: start_line past end of file)"
+    actual_end = min(end, total)
+    header = f"# lines {start}-{actual_end} of {total}"
+    if start > 1 or actual_end < total:
+        header += "; pass start_line/end_line to read another range"
+    return "".join(lines[start - 1 : actual_end]), header
 
 
 def _trim(text: str) -> str:

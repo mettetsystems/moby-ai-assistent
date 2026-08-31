@@ -24,6 +24,7 @@ class PackedFile(BaseModel):
     role: FileRole
     truncated: bool = False
     missing: bool = False
+    from_contract: bool = False
 
 
 class WorkerContext(BaseModel):
@@ -78,6 +79,8 @@ class WorkerContext(BaseModel):
                 flags.append("missing")
             if packed.truncated:
                 flags.append("truncated")
+            if packed.from_contract:
+                flags.append("contract")
             suffix = f" [{', '.join(flags)}]" if flags else ""
             body = packed.content
             sections.append(

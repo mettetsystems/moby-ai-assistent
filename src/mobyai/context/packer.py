@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from mobyai.context.errors import ContextLookupError
@@ -13,6 +13,7 @@ from mobyai.context.types import FileRole, PackedFile, WorkerContext
 from mobyai.execution.errors import WorkspaceError
 from mobyai.execution.filesystem import WorkspaceFilesystem
 from mobyai.models.attempt import AttemptResult, TaskAttempt
+from mobyai.models.contract import ModuleContract
 from mobyai.models.project import Project
 from mobyai.models.task import Task
 from mobyai.state.repository import StateStore
@@ -46,12 +47,14 @@ class ContextPacker:
         log_reducer: LogReducer | None = None,
         default_token_budget: int = 48000,
         constraints: Sequence[str] | None = None,
+        prefer_import_contracts: bool = True,
     ) -> None:
         self._filesystem = filesystem
         self._store = store
         self._log_reducer = log_reducer or LogReducer()
         self.default_token_budget = default_token_budget
         self.constraints = tuple(constraints) if constraints is not None else DEFAULT_CONSTRAINTS
+        self.prefer_import_contracts = prefer_import_contracts
 
     async def build_worker_context(
         self,
@@ -71,12 +74,17 @@ class ContextPacker:
             raise ContextLookupError(project_id, task_id)
         attempts = await self._store.attempts.list_for_task(project_id, task_id)
         reduced_error = await self._error_from_attempts(attempts)
+        contracts = {
+            item.path: item
+            for item in await self._store.contracts.list_for_project(project_id)
+        }
         return await self.pack(
             project,
             task,
             token_budget=token_budget,
             reduced_error=reduced_error,
             remediation_instruction=remediation_instruction,
+            contracts=contracts,
         )
 
     async def pack(
@@ -87,12 +95,13 @@ class ContextPacker:
         token_budget: int | None = None,
         reduced_error: ReducedLog | None = None,
         remediation_instruction: str | None = None,
+        contracts: Mapping[str, ModuleContract] | None = None,
     ) -> WorkerContext:
         budget = token_budget if token_budget is not None else self.default_token_budget
         if budget < 1:
             raise ValueError("token_budget must be >= 1")
 
-        candidates = await self._collect_files(task)
+        candidates = await self._collect_files(task, contracts or {})
         context = WorkerContext(
             project_id=project.project_id,
             task_id=task.task_id,
@@ -145,7 +154,9 @@ class ContextPacker:
             update={"token_count": estimate_tokens(context.render())}
         )
 
-    async def _collect_files(self, task: Task) -> list[PackedFile]:
+    async def _collect_files(
+        self, task: Task, contracts: Mapping[str, ModuleContract]
+    ) -> list[PackedFile]:
         planned: list[tuple[str, FileRole]] = []
         for path in task.target_files:
             planned.append((path, FileRole.TARGET))
@@ -169,7 +180,7 @@ class ContextPacker:
 
         packed: list[PackedFile] = []
         for path in ordered:
-            packed.append(await self._read_packed(path, selected[path]))
+            packed.append(await self._read_packed(path, selected[path], contracts))
 
         import_paths: list[str] = []
         seen_imports: set[str] = set(selected)
@@ -183,7 +194,7 @@ class ContextPacker:
                 import_paths.append(candidate)
 
         for path in import_paths:
-            imported = await self._read_packed(path, FileRole.IMPORT)
+            imported = await self._read_packed(path, FileRole.IMPORT, contracts)
             if imported.missing:
                 continue
             packed.append(imported)
@@ -191,7 +202,24 @@ class ContextPacker:
         packed.sort(key=lambda item: (_ROLE_PRIORITY[item.role], item.path))
         return packed
 
-    async def _read_packed(self, path: str, role: FileRole) -> PackedFile:
+    async def _read_packed(
+        self,
+        path: str,
+        role: FileRole,
+        contracts: Mapping[str, ModuleContract] | None = None,
+    ) -> PackedFile:
+        if (
+            role is FileRole.IMPORT
+            and self.prefer_import_contracts
+            and contracts is not None
+            and path in contracts
+        ):
+            return PackedFile(
+                path=path,
+                content=contracts[path].rendered,
+                role=role,
+                from_contract=True,
+            )
         try:
             content = await self._filesystem.read_file(path)
         except (WorkspaceError, UnicodeDecodeError, OSError):
@@ -279,6 +307,8 @@ def _format_file(item: PackedFile) -> str:
         flags.append("missing")
     if item.truncated:
         flags.append("truncated")
+    if item.from_contract:
+        flags.append("contract")
     suffix = f" [{', '.join(flags)}]" if flags else ""
     return f"## File {item.path} ({item.role.value}){suffix}\n```\n{item.content}\n```"
 

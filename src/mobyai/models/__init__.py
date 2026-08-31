@@ -2,6 +2,7 @@
 
 from mobyai.models.attempt import AttemptResult, TaskAttempt
 from mobyai.models.checkpoint import Checkpoint, CheckpointKind
+from mobyai.models.contract import ModuleContract
 from mobyai.models.config import (
     AgentRole,
     AppConfig,
@@ -32,7 +33,15 @@ from mobyai.models.orchestrator import (
     OrchestratorResult,
     TargetAgent,
 )
-from mobyai.models.planner import DAGPatch, PlannerOutput, PlannerTaskSpec, TaskSupersede
+from mobyai.models.planner import (
+    DAGPatch,
+    PlannerInspectCall,
+    PlannerOutput,
+    PlannerPatchTurn,
+    PlannerTaskSpec,
+    PlannerTurn,
+    TaskSupersede,
+)
 from mobyai.models.project import Project, ProjectState
 from mobyai.models.snapshot import ProjectSnapshot
 from mobyai.models.task import Task, TaskStatus
@@ -58,12 +67,16 @@ __all__ = [
     "ModelRequest",
     "ModelResponse",
     "ModelsConfig",
+    "ModuleContract",
     "NextPayload",
     "OrchestratorDecision",
     "OrchestratorResult",
     "PersistenceConfig",
+    "PlannerInspectCall",
     "PlannerOutput",
+    "PlannerPatchTurn",
     "PlannerTaskSpec",
+    "PlannerTurn",
     "Project",
     "ProjectSettings",
     "ProjectSnapshot",

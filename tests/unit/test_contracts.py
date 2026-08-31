@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from mobyai.models.orchestrator import OrchestratorDecision, OrchestratorResult
-from mobyai.models.planner import PlannerOutput
+from mobyai.models.planner import PlannerInspectCall, PlannerOutput, PlannerTurn
 from mobyai.models.worker import WorkerResult, WorkerToolName
 
 
@@ -76,6 +76,32 @@ def test_invalid_orchestrator_decision() -> None:
         )
 
 
+def test_planner_turn_lifts_flat_plan() -> None:
+    turn = PlannerTurn.model_validate(VALID_PLANNER)
+    assert turn.plan is not None
+    assert turn.plan.project_name == "example_app"
+    assert turn.inspect_calls == []
+
+
+def test_planner_turn_accepts_inspect_calls() -> None:
+    turn = PlannerTurn.model_validate(
+        {
+            "inspect_calls": [
+                {"name": "read_file", "arguments": {"path": "src/app.py", "start_line": 1}}
+            ]
+        }
+    )
+    assert turn.plan is None
+    assert turn.inspect_calls[0].name.value == "read_file"
+
+
+def test_planner_inspect_rejects_write_file() -> None:
+    with pytest.raises(ValidationError):
+        PlannerInspectCall.model_validate(
+            {"name": "write_file", "arguments": {"path": "src/app.py", "contents": "x"}}
+        )
+
+
 def test_valid_worker_result() -> None:
     result = WorkerResult.model_validate(
         {
@@ -86,11 +112,16 @@ def test_valid_worker_result() -> None:
                 {
                     "name": "write_file",
                     "arguments": {"path": "src/db.py", "contents": "pass\n"},
-                }
+                },
+                {
+                    "name": "glob",
+                    "arguments": {"pattern": "**/*.py"},
+                },
             ],
         }
     )
     assert result.tool_calls[0].name == WorkerToolName.WRITE_FILE
+    assert result.tool_calls[1].name == WorkerToolName.GLOB
 
 
 def test_invalid_worker_tool_name() -> None:

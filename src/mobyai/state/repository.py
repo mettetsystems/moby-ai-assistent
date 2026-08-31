@@ -7,6 +7,7 @@ from typing import Protocol
 
 from mobyai.models.attempt import TaskAttempt
 from mobyai.models.checkpoint import Checkpoint
+from mobyai.models.contract import ModuleContract
 from mobyai.models.event import EventRecord
 from mobyai.models.project import Project
 from mobyai.models.snapshot import ProjectSnapshot
@@ -59,11 +60,20 @@ class EventRepository(Protocol):
     ) -> list[EventRecord]: ...
 
 
+class ContractRepository(Protocol):
+    async def upsert(self, contract: ModuleContract) -> None: ...
+
+    async def get(self, project_id: str, path: str) -> ModuleContract | None: ...
+
+    async def list_for_project(self, project_id: str) -> list[ModuleContract]: ...
+
+
 class StateStore(Protocol):
     projects: ProjectRepository
     tasks: TaskRepository
     checkpoints: CheckpointRepository
     attempts: AttemptRepository
     events: EventRepository
+    contracts: ContractRepository
 
     async def load_snapshot(self, project_id: str) -> ProjectSnapshot | None: ...
