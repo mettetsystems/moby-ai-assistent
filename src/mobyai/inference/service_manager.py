@@ -9,6 +9,7 @@ import signal
 import subprocess
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlparse
 
@@ -22,8 +23,10 @@ from mobyai.models.config import AgentRole, AppConfig, ServiceMode
 from mobyai.models.inference import GpuServiceMode, InferenceEndpoint
 
 HealthProbe = Callable[[AgentRole], bool | Awaitable[bool]]
+RoleProgressFn = Callable[[AgentRole, str], None]
 SleepFn = Callable[[float], Awaitable[None]]
 MonotonicFn = Callable[[], float]
+_PROGRESS_INTERVAL_SECONDS = 10.0
 
 
 _GPU_MODE = {
@@ -66,6 +69,7 @@ class ProcessSpawner(Protocol):
         *,
         env: Mapping[str, str],
         cwd: str | None = None,
+        log_file: Path | None = None,
     ) -> ManagedProcess: ...
 
 
@@ -117,18 +121,26 @@ class SubprocessSpawner:
         *,
         env: Mapping[str, str],
         cwd: str | None = None,
+        log_file: Path | None = None,
     ) -> ManagedProcess:
+        stderr_handle = None
+        if log_file is not None:
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            stderr_handle = log_file.open("ab")
         try:
             process = subprocess.Popen(
                 list(argv),
                 env=dict(env),
                 cwd=cwd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=stderr_handle if stderr_handle is not None else subprocess.DEVNULL,
                 start_new_session=True,
             )
         except OSError as exc:
             raise ProcessSpawnError(f"Failed to spawn {argv[0]}: {exc}") from exc
+        finally:
+            if stderr_handle is not None:
+                stderr_handle.close()
         return SubprocessManagedProcess(process)
 
 
@@ -142,6 +154,7 @@ class GpuServiceManager:
         client: httpx.AsyncClient | None = None,
         spawner: ProcessSpawner | None = None,
         health: HealthProbe | None = None,
+        progress: RoleProgressFn | None = None,
         sleep: SleepFn | None = None,
         monotonic: MonotonicFn | None = None,
     ) -> None:
@@ -151,11 +164,16 @@ class GpuServiceManager:
         self._client = client or httpx.AsyncClient(timeout=timeout)
         self._spawner = spawner or SubprocessSpawner()
         self._health_probe = health
+        self._progress = progress
         self._sleep = sleep or asyncio.sleep
         self._monotonic = monotonic or time.monotonic
         self._lock = asyncio.Lock()
         self._processes: dict[AgentRole, ManagedProcess] = {}
         self._occupancy: dict[str, AgentRole] = {}
+        self._log_dir = _service_log_dir(config)
+
+    def set_progress(self, progress: RoleProgressFn | None) -> None:
+        self._progress = progress
 
     async def ensure_role_available(self, role: AgentRole) -> InferenceEndpoint:
         async with self._lock:
@@ -185,7 +203,12 @@ class GpuServiceManager:
             await self._client.aclose()
 
     async def _ensure(self, role: AgentRole) -> InferenceEndpoint:
+        model = self._config.models.for_role(role)
+        device = self._device(role)
+        self._report(role, f"check   {model.endpoint}  device={device}")
+
         if await self._probe_health(role):
+            self._report(role, "reuse   endpoint already healthy")
             self._occupy(role)
             return self._endpoint(role)
 
@@ -201,6 +224,7 @@ class GpuServiceManager:
         if self._config.services.swap_shared_device:
             await self._vacate_shared_device(role)
 
+        self._report(role, "launch  starting llama.cpp server")
         await self._start(role)
         try:
             await self._wait_healthy(role)
@@ -215,8 +239,12 @@ class GpuServiceManager:
         if not argv:
             raise ProcessSpawnError(f"{role.value} has no launch argv")
         env = _launch_env(self._device(role), extra=huggingface_environ(self._config))
-        handle = self._spawner.spawn(argv, env=env)
+        log_file = self._log_dir / f"{role.value}.log" if self._log_dir is not None else None
+        handle = self._spawner.spawn(argv, env=env, log_file=log_file)
         self._processes[role] = handle
+        model = self._config.models.for_role(role).model
+        log_detail = f"  log={log_file}" if log_file is not None else ""
+        self._report(role, f"spawn   pid={handle.pid}  model={model}{log_detail}")
 
     async def _stop(self, role: AgentRole) -> None:
         handle = self._processes.pop(role, None)
@@ -249,15 +277,40 @@ class GpuServiceManager:
     async def _wait_healthy(self, role: AgentRole) -> None:
         timeout = float(self._config.services.health_timeout_seconds)
         interval = float(self._config.services.health_poll_interval_seconds)
-        deadline = self._monotonic() + timeout
+        started = self._monotonic()
+        deadline = started + timeout
+        last_report = -_PROGRESS_INTERVAL_SECONDS
+        endpoint = self._config.models.for_role(role).endpoint
         while True:
+            if not self._alive(role):
+                code = self._exit_code(role)
+                log_hint = ""
+                if self._log_dir is not None:
+                    log_hint = f" (see {self._log_dir / f'{role.value}.log'})"
+                raise RoleUnhealthyError(
+                    f"{role.value} process exited with code {code} before becoming healthy{log_hint}"
+                )
             if await self._probe_health(role):
+                elapsed = self._monotonic() - started
+                self._report(role, f"healthy ready after {elapsed:.0f}s")
                 return
-            if self._monotonic() >= deadline:
+            now = self._monotonic()
+            if now >= deadline:
                 raise RoleUnhealthyError(
                     f"{role.value} did not become healthy within {timeout}s"
                 )
+            elapsed = now - started
+            if elapsed - last_report >= _PROGRESS_INTERVAL_SECONDS:
+                self._report(
+                    role,
+                    f"wait    probing {endpoint} ({elapsed:.0f}s elapsed, model may still be loading)",
+                )
+                last_report = elapsed
             await self._sleep(interval)
+
+    def _report(self, role: AgentRole, detail: str) -> None:
+        if self._progress is not None:
+            self._progress(role, detail)
 
     async def _probe_health(self, role: AgentRole) -> bool:
         if self._health_probe is not None:
@@ -276,6 +329,12 @@ class GpuServiceManager:
     def _alive(self, role: AgentRole) -> bool:
         handle = self._processes.get(role)
         return handle is not None and handle.poll() is None
+
+    def _exit_code(self, role: AgentRole) -> int | None:
+        handle = self._processes.get(role)
+        if handle is None:
+            return None
+        return handle.poll()
 
     def _device(self, role: AgentRole) -> int | str | None:
         return device_for_role(self._config, role)
@@ -341,12 +400,17 @@ def _launch_env(
     extra: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     env = os.environ.copy()
+    # Match nvidia-smi indices. Without this, CUDA often uses FASTEST_FIRST so
+    # CUDA_VISIBLE_DEVICES=1 can select the smaller card on a dual-GPU box.
+    env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     if device is None or _is_cpu(device):
         env["CUDA_VISIBLE_DEVICES"] = ""
     else:
         env["CUDA_VISIBLE_DEVICES"] = str(device)
     if extra:
         env.update(extra)
+        # Keep PCI_BUS_ID even if extras try to override with an empty value.
+        env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     return env
 
 
@@ -374,3 +438,9 @@ def _device_key(device: int | str | None) -> str | None:
     if device is None or _is_cpu(device):
         return None
     return str(device)
+
+
+def _service_log_dir(config: AppConfig) -> Path | None:
+    if config.services.mode is not ServiceMode.MANAGED:
+        return None
+    return config.persistence.database_path.expanduser().resolve().parent / "logs"

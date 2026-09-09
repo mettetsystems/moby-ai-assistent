@@ -12,6 +12,7 @@ from mobyai.agents.worker import WorkerAgent
 from mobyai.console.settings import OverlayWatcher
 from mobyai.execution.workspace import Workspace
 from mobyai.inference.factory import InferenceRegistry
+from mobyai.inference.llamacpp import apply_mobyai_env
 from mobyai.inference.service_manager import (
     InferenceServiceManager,
     device_for_role,
@@ -50,6 +51,7 @@ class Runtime:
 
     @classmethod
     def from_config(cls, config: AppConfig) -> Runtime:
+        apply_mobyai_env()
         store = SqliteStateStore(config.persistence.database_path)
         registry = InferenceRegistry.from_config(config)
         repairs = config.runtime.max_schema_repair_attempts

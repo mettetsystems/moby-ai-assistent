@@ -51,9 +51,9 @@ class RecordingSpawner:
         self.starts: list[dict[str, object]] = []
         self.handles: list[FakeProcess] = []
 
-    def spawn(self, argv, *, env, cwd=None):
+    def spawn(self, argv, *, env, cwd=None, log_file=None):
         handle = FakeProcess(pid=9000 + len(self.handles))
-        self.starts.append({"argv": list(argv), "env": dict(env), "cwd": cwd})
+        self.starts.append({"argv": list(argv), "env": dict(env), "cwd": cwd, "log_file": log_file})
         self.handles.append(handle)
         return handle
 
@@ -188,6 +188,7 @@ async def test_managed_sets_cuda_visible_devices_from_config() -> None:
     endpoint = await manager.ensure_role_available(AgentRole.PLANNER)
     assert endpoint.managed is True
     assert spawner.starts[0]["env"]["CUDA_VISIBLE_DEVICES"] == "3"
+    assert spawner.starts[0]["env"]["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
     assert "9802" in spawner.starts[0]["argv"]
     assert manager.gpu_mode(3) is GpuServiceMode.PLANNER_MODE
     await manager.aclose()
@@ -344,4 +345,34 @@ async def test_factory_builds_from_config() -> None:
         config, client=_health_client(True), spawner=RecordingSpawner()
     )
     assert isinstance(manager, GpuServiceManager)
+    await manager.aclose()
+
+
+async def test_progress_reports_during_health_wait() -> None:
+    data = _managed_payload()
+    data["services"]["health_timeout_seconds"] = 30
+    data["services"]["health_poll_interval_seconds"] = 5
+    config = AppConfig.model_validate(data)
+    spawner = RecordingSpawner()
+    clock = Clock()
+    messages: list[tuple[AgentRole, str]] = []
+
+    async def health(role: AgentRole) -> bool:
+        if clock.now < 10.0:
+            return False
+        return any("9800" in start["argv"] for start in spawner.starts)
+
+    manager = GpuServiceManager(
+        config,
+        spawner=spawner,
+        health=health,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+        progress=lambda role, detail: messages.append((role, detail)),
+    )
+    await manager.ensure_role_available(AgentRole.WORKER)
+    assert any("check" in detail for _role, detail in messages)
+    assert any("spawn" in detail for _role, detail in messages)
+    assert any("wait" in detail for _role, detail in messages)
+    assert any("healthy" in detail for _role, detail in messages)
     await manager.aclose()

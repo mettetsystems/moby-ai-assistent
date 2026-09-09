@@ -539,6 +539,18 @@ async def _cmd_doctor(runtime: Runtime, stdout: TextIO) -> int:
 
 
 async def _cmd_start(runtime: Runtime, stdout: TextIO) -> int:
+    mode = runtime.config.services.mode.value
+    print(f"starting inference servers ({mode} mode)", file=stdout)
+    stdout.flush()
+
+    set_progress = getattr(runtime.services, "set_progress", None)
+
+    def on_progress(role: AgentRole, detail: str) -> None:
+        print(f"{role.value:<18} {detail}", file=stdout)
+        stdout.flush()
+
+    if set_progress is not None:
+        set_progress(on_progress)
     try:
         for role in AgentRole:
             try:
@@ -548,11 +560,17 @@ async def _cmd_start(runtime: Runtime, stdout: TextIO) -> int:
             endpoint = await runtime.services.ensure_role_available(role)
             status = "already running" if already else "started"
             print(
-                f"{role.value:<14} ready  {status}  {endpoint.base_url}  device={endpoint.device}",
+                f"{role.value:<18} ready  {status}  {endpoint.base_url}  device={endpoint.device}",
                 file=stdout,
             )
+            stdout.flush()
     except (RoleUnhealthyError, ServiceManagerError) as exc:
         raise CliError(str(exc)) from exc
+    finally:
+        if set_progress is not None:
+            set_progress(None)
+    print("all inference servers ready", file=stdout)
+    stdout.flush()
     return 0
 
 

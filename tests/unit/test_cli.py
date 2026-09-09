@@ -302,6 +302,8 @@ async def test_start_ensures_external_roles(tmp_path: Path) -> None:
     ]
     assert "already running" in out or "started" in out
     assert "ready" in out or "already running" in out
+    assert "starting inference servers" in out
+    assert "all inference servers ready" in out
 
 
 async def test_stop_pauses_and_stops_services(tmp_path: Path) -> None:

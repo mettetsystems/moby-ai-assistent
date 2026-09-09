@@ -328,7 +328,7 @@ def test_setup_script_help() -> None:
         text=True,
     )
     assert result.returncode == 0
-    assert "Walks through" in result.stdout
+    assert "bootstrap" in result.stdout.lower() or "wizard" in result.stdout.lower()
     assert "--hf-token" in result.stdout
     assert "--preset" in result.stdout
     assert "--download-models" in result.stdout
@@ -354,6 +354,7 @@ def test_render_config_round_trip() -> None:
             download_models=False,
             install_runtime=False,
             endpoint_test=False,
+            llama_binary=None,
         )
     )
     config = AppConfig.from_yaml_text(text)
