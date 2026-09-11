@@ -140,3 +140,22 @@ async def test_missing_arguments_fail_without_writes(tmp_path: Path) -> None:
     assert outcome.ok is False
     with pytest.raises(WorkspaceError):
         await files.read_file("src/app.py")
+
+
+async def test_read_file_range_has_provenance(tmp_path: Path) -> None:
+    _, files, dispatcher = _dispatcher(tmp_path)
+    await files.write_file("sample.txt", "one\ntwo\nthree\nfour\n")
+    result = await dispatcher.execute(WorkerToolCall(name="read_file",
+        arguments={"path": "sample.txt", "start_line": 2, "max_lines": 2}))
+    assert result.ok and result.output == "two\nthree\n"
+    assert result.source_path == "sample.txt"
+    assert (result.start_line, result.end_line, result.total_lines) == (2, 3, 4)
+    assert result.truncated
+
+
+@pytest.mark.parametrize("arguments", [{"start_line": 0}, {"start_line": -1}, {"max_lines": 0}, {"max_lines": 2001}, {"max_lines": True}])
+async def test_read_file_rejects_invalid_ranges(tmp_path: Path, arguments: dict) -> None:
+    _, files, dispatcher = _dispatcher(tmp_path)
+    await files.write_file("sample.txt", "hello")
+    result = await dispatcher.execute(WorkerToolCall(name="read_file", arguments={"path": "sample.txt", **arguments}))
+    assert not result.ok

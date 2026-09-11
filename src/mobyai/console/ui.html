@@ -166,6 +166,8 @@
         <button class="btn" id="refresh" type="button">Refresh</button>
         <label><input id="auto" type="checkbox" checked/> Auto-refresh 2s</label>
       </div>
+      <p id="monitor-status" class="status" role="status"></p>
+      <pre id="project-events" class="hidden"></pre>
       <div id="fail-banner" class="banner hidden"></div>
       <div id="chips" class="chips"></div>
       <div id="steps"></div>
@@ -256,6 +258,7 @@
 
     async function loadProjects() {
       const res = await fetch("/api/projects");
+      if (!res.ok) throw new Error("Project list request failed (" + res.status + ")");
       const data = await res.json();
       const select = $("project");
       const current = select.value;
@@ -265,10 +268,26 @@
       if (current && [...select.options].some(o => o.value === current)) select.value = current;
     }
 
+    let monitorLoading = false;
     async function loadMonitor() {
+      if (monitorLoading) return;
+      monitorLoading = true;
+      try {
+        await refreshMonitor();
+      } catch (error) {
+        $("monitor-status").textContent = "Could not refresh activity: " + error.message + ". Check that the console is running.";
+        $("monitor-status").className = "status err";
+      } finally {
+        monitorLoading = false;
+      }
+    }
+
+    async function refreshMonitor() {
       await loadProjects();
       const id = $("project").value;
       if (!id) {
+        $("monitor-status").textContent = "No projects in this console database. Use the same --config for ui and run.";
+        $("project-events").classList.add("hidden");
         $("steps").innerHTML = "<p class='hint'>No projects yet. Run mobyai init / run first.</p>";
         $("fail-banner").classList.add("hidden");
         $("chips").innerHTML = "";
@@ -280,9 +299,15 @@
         $("steps").innerHTML = `<p class="hint">${esc(data.error || "Failed to load")}</p>`;
         return;
       }
+      $("monitor-status").className = "status";
+      $("monitor-status").textContent = data.project.name + " — " + data.project.state +
+        " — " + (data.steps || []).filter(s => s.status === "passed").length + "/" +
+        (data.steps || []).length + " steps passed — updated " + new Date().toLocaleTimeString();
+      $("project-events").textContent = (data.unscoped_events || []).join("\n");
+      $("project-events").classList.toggle("hidden", !(data.unscoped_events || []).length);
       const failed = data.failed || [];
       const banner = $("fail-banner");
-      if (failed.length) {
+      if (failed.length || data.project.last_error) {
         banner.classList.remove("hidden");
         banner.textContent = data.project.last_error
           ? ("Project error: " + data.project.last_error)
@@ -294,11 +319,12 @@
         const kind = step.failed ? "failed" : (step.status === "passed" ? "passed" : (step.status === "running" || step.status === "testing" ? "running" : ""));
         return `<span class="chip ${kind}">${esc(step.task_id)} ${esc(step.status)}</span>`;
       }).join("");
+      const expanded = new Set([...document.querySelectorAll("details.step[open]")].map(el => el.dataset.task));
       $("steps").innerHTML = (data.steps || []).map(step => {
-        const open = step.failed ? " open" : "";
+        const open = step.failed || expanded.has(step.task_id) ? " open" : "";
         const body = step.failed ? (step.workflow || step.log_tail || "(no trace)") : (step.log_tail || "(no log yet)");
         const cls = step.failed ? "step failed" : "step";
-        return `<details class="${cls}"${open}>
+        return `<details data-task="${esc(step.task_id)}" class="${cls}"${open}>
           <summary>
             <span class="badge ${step.failed ? "failed" : (step.status === "passed" ? "passed" : "")}">${esc(step.status)}</span>
             <strong>${esc(step.task_id)}</strong>
@@ -307,7 +333,7 @@
           </summary>
           <pre>${esc(body)}</pre>
         </details>`;
-      }).join("");
+      }).join("") || "<p class='hint'>No task steps recorded yet. Planning activity appears above. The console monitors work; start it with mobyai run in another terminal.</p>";
     }
 
     $("refresh").onclick = loadMonitor;

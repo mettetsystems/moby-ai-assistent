@@ -275,3 +275,48 @@ def test_parse_command_log_round_trip() -> None:
     assert parsed.exit_code == 1
     assert parsed.stdout == "ok\n"
     assert parsed.stderr == "boom\n"
+
+
+@pytest.mark.parametrize("budget", range(1, 20))
+def test_tiny_truncation_never_exceeds_budget(budget: int) -> None:
+    text, clipped = truncate_to_tokens("abcdef" * 100, budget)
+    assert clipped
+    assert estimate_tokens(text) <= budget
+
+
+async def test_contract_overflow_is_explicit(tmp_path: Path) -> None:
+    from mobyai.context.errors import ContextBudgetError
+    space, files = _workspace(tmp_path)
+    with pytest.raises(ContextBudgetError, match="Required task contract"):
+        await ContextPacker(files).pack(make_project(workspace_root=space.root),
+            make_task("STEP_001", acceptance_criteria=["Exact requirement " * 100]), token_budget=10)
+
+
+async def test_dependency_contract_preserves_guarantees_without_history(tmp_path: Path) -> None:
+    space, files = _workspace(tmp_path)
+    store = InMemoryStateStore()
+    project = make_project(workspace_root=space.root)
+    upstream = make_task("STEP_001", target_files=["api.py"],
+        acceptance_criteria=["Returns a stable identifier"], status=TaskStatus.PASSED)
+    current = make_task("STEP_002", dependencies=["STEP_001"])
+    await store.projects.save(project)
+    await store.tasks.save_all(project.project_id, [upstream, current])
+    context = await ContextPacker(files, store).build_worker_context(project.project_id, "STEP_002", 4000)
+    assert context.contract["dependencies"] == ["STEP_001"]
+    assert context.dependency_contracts[0]["status"] == "passed"
+    assert "Returns a stable identifier" in context.render()
+    assert "api.py" in context.render()
+    assert "api.py" not in [item.path for item in context.files]
+
+
+async def test_compression_keeps_failure_identity_and_source(tmp_path: Path) -> None:
+    space, files = _workspace(tmp_path)
+    error = LogReducer().reduce(CommandResult(command=["pytest"], exit_code=1,
+        stdout="noise" * 10000, stderr="FAILED tests/test_api.py::test_id", duration_seconds=1))
+    error = error.model_copy(update={"source_path": ".mobyai/attempt.log"})
+    context = await ContextPacker(files).pack(make_project(workspace_root=space.root),
+        make_task("STEP_001"), reduced_error=error, token_budget=1000)
+    assert context.token_count <= 1000
+    assert "tests/test_api.py::test_id" in context.render()
+    assert ".mobyai/attempt.log" in context.render()
+    assert "exit_code: 1" in context.render()

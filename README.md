@@ -37,6 +37,40 @@ mobyai setup
 
 Then `source .venv/bin/activate` in every new shell.
 
+## Starting after installation
+
+Use [`scripts/start.sh`](scripts/start.sh) to launch the installed application:
+
+```bash
+./scripts/start.sh
+```
+
+This activates the repository virtual environment, loads `~/MobyAI/env.sh` if
+present, and opens the operator console at `http://127.0.0.1:8743` by default.
+It does not reinstall packages. Keep the terminal open; Ctrl+C stops the console.
+The console monitors projects but does not start coding work automatically.
+
+To run an existing project, open another terminal:
+
+```bash
+./scripts/start.sh run demo
+./scripts/start.sh status demo
+```
+
+Managed mode loads inference servers as needed during `run`. No separate
+`mobyai start` command is required. A project already marked `FAILED` must be
+recovered separately; this launcher does not reset project state.
+
+The launcher uses the repository `config.yaml`, or `MOBYAI_CONFIG` when set.
+Override it before the command:
+
+```bash
+./scripts/start.sh --config /path/to/config.yaml ui --no-browser
+```
+
+Run `./scripts/start.sh --help` for usage. The script also works when called
+by its absolute path from another directory.
+
 ## Layout
 
 - [`docs/setup.md`](docs/setup.md) — operator install and config walkthrough

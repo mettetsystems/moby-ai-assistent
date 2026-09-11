@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from mobyai.execution.commands import CommandResult
+if TYPE_CHECKING:
+    from mobyai.execution.commands import CommandResult
 
 _TRACEBACK_RE = re.compile(
     r"Traceback \(most recent call last\):.*?(?:\n[A-Za-z_][\w.]*Error[^\n]*)",
@@ -26,6 +28,7 @@ class ReducedLog(BaseModel):
     stdout_tail: str = ""
     stderr_head: str = ""
     stderr_tail: str = ""
+    source_path: str | None = None
     traceback: str | None = None
     failed_tests: list[str] = Field(default_factory=list)
     assertion_differences: list[str] = Field(default_factory=list)
@@ -36,6 +39,8 @@ class ReducedLog(BaseModel):
             f"exit_code: {self.exit_code}",
             f"timed_out: {self.timed_out}",
         ]
+        if self.source_path:
+            lines.append(f"full_log: {self.source_path}")
         if self.failed_tests:
             lines.append("failed_tests:")
             lines.extend(f"- {name}" for name in self.failed_tests)

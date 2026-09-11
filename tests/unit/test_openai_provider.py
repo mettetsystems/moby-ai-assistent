@@ -154,3 +154,22 @@ async def test_registry_from_config_uses_mock_client() -> None:
     registry = InferenceRegistry.from_config(config, client=client)
     assert await registry.get(AgentRole.ORCHESTRATOR).healthcheck() is True
     await client.aclose()
+
+
+async def test_empty_timeout_preserves_diagnostic_identity() -> None:
+    import httpx
+    import pytest
+    from mobyai.inference.openai_compatible import OpenAICompatibleProvider
+    from mobyai.inference.base import InferenceError
+    from mobyai.models.inference import ModelRequest, ChatMessage
+
+    def timeout(request):
+        raise httpx.ReadTimeout("", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(timeout)) as client:
+        provider = OpenAICompatibleProvider("http://localhost:9802", "planner-model", client=client)
+        with pytest.raises(InferenceError) as error:
+            await provider.generate(ModelRequest(messages=[ChatMessage(role="user", content="test")]))
+        assert "ReadTimeout" in str(error.value)
+        assert "localhost:9802" in str(error.value)
+        assert "planner-model" in str(error.value)

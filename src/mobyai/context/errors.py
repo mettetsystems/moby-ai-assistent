@@ -9,3 +9,7 @@ class ContextLookupError(LookupError):
             super().__init__(f"Project not found: {project_id}")
         else:
             super().__init__(f"Task not found: {project_id}/{task_id}")
+
+
+class ContextBudgetError(ValueError):
+    """Required task evidence cannot fit the requested estimated token budget."""

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-from mobyai.context.errors import ContextLookupError
+from mobyai.context.errors import ContextLookupError, ContextBudgetError
 from mobyai.context.imports import candidate_import_paths
 from mobyai.context.log_reducer import LogReducer, ReducedLog
 from mobyai.context.tokenizer import estimate_tokens, truncate_to_tokens
@@ -71,12 +71,24 @@ class ContextPacker:
             raise ContextLookupError(project_id, task_id)
         attempts = await self._store.attempts.list_for_task(project_id, task_id)
         reduced_error = await self._error_from_attempts(attempts)
+        dependencies = []
+        for dependency_id in task.dependencies:
+            dependency = await self._store.tasks.get(project_id, dependency_id)
+            if dependency is None:
+                raise ContextLookupError(project_id, dependency_id)
+            dependencies.append({
+                "task_id": dependency.task_id, "status": dependency.status.value,
+                "target_files": dependency.target_files,
+                "acceptance_criteria": dependency.acceptance_criteria,
+                "test_commands": dependency.test_commands,
+            })
         return await self.pack(
             project,
             task,
             token_budget=token_budget,
             reduced_error=reduced_error,
             remediation_instruction=remediation_instruction,
+            dependency_contracts=dependencies,
         )
 
     async def pack(
@@ -87,6 +99,7 @@ class ContextPacker:
         token_budget: int | None = None,
         reduced_error: ReducedLog | None = None,
         remediation_instruction: str | None = None,
+        dependency_contracts: list[dict[str, object]] | None = None,
     ) -> WorkerContext:
         budget = token_budget if token_budget is not None else self.default_token_budget
         if budget < 1:
@@ -102,6 +115,8 @@ class ContextPacker:
             acceptance_criteria=list(task.acceptance_criteria),
             test_commands=list(task.test_commands),
             constraints=list(self.constraints),
+            contract={"target_files": list(task.target_files), "test_files": list(task.test_files), "required_context": list(task.required_context), "dependencies": list(task.dependencies)},
+            dependency_contracts=dependency_contracts or [],
             files=[],
             reduced_error=reduced_error,
             remediation_instruction=remediation_instruction,
@@ -204,13 +219,13 @@ class ContextPacker:
         failed = [item for item in attempts if item.result in _FAILED_ATTEMPTS]
         if not failed:
             return None
-        latest = failed[-1]
+        latest = max(failed, key=lambda item: item.attempt_number)
         if not latest.test_log_path:
             return None
         text = await self._read_log(latest.test_log_path)
         if text is None:
             return None
-        return self._log_reducer.reduce_log_text(text)
+        return self._log_reducer.reduce_log_text(text).model_copy(update={"source_path": latest.test_log_path})
 
     async def _read_log(self, path: str) -> str | None:
         try:
@@ -228,7 +243,7 @@ class ContextPacker:
             architecture = trimmed or None
             context = context.model_copy(update={"architecture_summary": architecture})
         if estimate_tokens(context.render()) > budget and error is not None:
-            context = context.model_copy(update={"reduced_error": None})
+            context = context.model_copy(update={"reduced_error": error.model_copy(update={"stdout_head": "", "stdout_tail": "", "stderr_head": "", "stderr_tail": ""})})
         return context
 
 
@@ -249,13 +264,14 @@ def _fit_to_budget(context: WorkerContext, budget: int) -> WorkerContext:
                 break
             if content:
                 continue
-        if last.role == FileRole.TARGET:
-            break
         packed.pop()
         omitted.append(last.path)
         context = context.model_copy(
             update={"files": list(packed), "omitted_paths": list(omitted)}
         )
+    required = estimate_tokens(context.render())
+    if required > budget:
+        raise ContextBudgetError(f"Required task contract and evidence need {required} estimated tokens; budget is {budget}. Increase the budget.")
     return context
 
 

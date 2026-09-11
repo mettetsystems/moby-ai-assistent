@@ -19,6 +19,8 @@ def truncate_to_tokens(text: str, max_tokens: int) -> tuple[str, bool]:
         return "", True
     if estimate_tokens(text) <= max_tokens:
         return text, False
+    if max_tokens * _CHARS_PER_TOKEN <= len(_TRUNCATION_MARKER):
+        return text[:max_tokens * _CHARS_PER_TOKEN], True
     budget_chars = max(max_tokens * _CHARS_PER_TOKEN - len(_TRUNCATION_MARKER), 1)
     head = (budget_chars * 2) // 3
     tail = budget_chars - head

@@ -37,10 +37,15 @@ def format_event(event: EventRecord) -> str:
     )
 
 
-def read_log_text(path: str | None) -> str:
+def read_log_text(path: str | None, workspace_root: Path | None = None) -> str:
     if not path:
         return ""
     file_path = Path(path)
+    if workspace_root is not None:
+        root = workspace_root.resolve()
+        file_path = (root / file_path).resolve()
+        if not file_path.is_relative_to(root):
+            return ""
     if not file_path.is_file():
         return ""
     return file_path.read_text(encoding="utf-8", errors="replace")
@@ -69,7 +74,7 @@ async def build_monitor(runtime: Runtime, project_id: str) -> dict[str, Any]:
         else:
             unscoped.append(event)
 
-    steps = [_step_view(task, attempts_by_task[task.task_id], events_by_task[task.task_id]) for task in ordered]
+    steps = [_step_view(task, attempts_by_task[task.task_id], events_by_task[task.task_id], project.workspace_root) for task in ordered]
     failed = [step for step in steps if step["failed"]]
     return {
         "project": _project_view(project),
@@ -90,7 +95,7 @@ def _project_view(project: Project) -> dict[str, Any]:
     }
 
 
-def _step_view(task: Task, attempts: list[Any], events: list[EventRecord]) -> dict[str, Any]:
+def _step_view(task: Task, attempts: list[Any], events: list[EventRecord], workspace_root: Path | None = None) -> dict[str, Any]:
     failed = task.status is TaskStatus.FAILED or any(
         attempt.result is not None and attempt.result.value in {"fail", "error", "timeout"}
         for attempt in attempts
@@ -99,7 +104,7 @@ def _step_view(task: Task, attempts: list[Any], events: list[EventRecord]) -> di
     attempt_views = []
     combined_logs: list[str] = []
     for attempt in attempts:
-        log_text = read_log_text(attempt.test_log_path)
+        log_text = read_log_text(attempt.test_log_path, workspace_root)
         if log_text:
             combined_logs.append(
                 f"--- attempt {attempt.attempt_number} {attempt.result} ---\n{log_text}"

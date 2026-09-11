@@ -13,6 +13,9 @@ Rules:
 - Never paste file bodies as chat. Mutate the workspace only via tool_calls.
 - Respect project-relative paths. Do not use .. or absolute paths.
 - Preserve unrelated code.
+- Dependency contracts describe upstream guarantees; do not redo completed dependencies.
+- Retrieve omitted/truncated files with read_file(path, start_line, max_lines). Lines are 1-based.
+- A truncated read is incomplete evidence; request smaller ranges before editing.
 - The harness runs tests and decides pass/fail. Your `done` flag is not authority.
 - Return ONLY JSON that matches the required schema. No markdown. No explanation.
 """

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from mobyai.agents.prompts.worker import TOOL_FEEDBACK_PROMPT
 from mobyai.agents.worker import WorkerAgent
 from mobyai.context.packer import ContextPacker
+from mobyai.context.errors import ContextBudgetError
 from mobyai.dag.graph import TaskGraph
 from mobyai.engine.state_machine import ProjectStateMachine
 from mobyai.execution.commands import CommandResult, CommandRunner
@@ -161,7 +162,7 @@ async def execute_task(
                     ),
                 ),
             ]
-    except WorkspaceError as exc:
+    except (WorkspaceError, ContextBudgetError) as exc:
         inference_error = inference_error or str(exc)
 
     task = task.model_copy(update={"status": TaskStatus.TESTING})

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+import json
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -37,6 +38,8 @@ class WorkerContext(BaseModel):
     acceptance_criteria: list[str] = Field(default_factory=list)
     test_commands: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
+    contract: dict[str, list[str]] = Field(default_factory=dict)
+    dependency_contracts: list[dict[str, object]] = Field(default_factory=list)
     files: list[PackedFile] = Field(default_factory=list)
     reduced_error: ReducedLog | None = None
     remediation_instruction: str | None = None
@@ -52,6 +55,10 @@ class WorkerContext(BaseModel):
             f"# Task {self.task_id}",
             f"## Objective\n{self.objective}",
         ]
+        if self.contract:
+            sections.append("## Task contract (exact paths)\n" + json.dumps(self.contract))
+        if self.dependency_contracts:
+            sections.append("## Dependency contracts (not implementation instructions)\n" + json.dumps(self.dependency_contracts))
         if self.architecture_summary:
             sections.append(f"## Architecture\n{self.architecture_summary}")
         sections.append(f"## Instruction\n{self.instruction}")

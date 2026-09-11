@@ -50,7 +50,10 @@ class OpenAICompatibleProvider:
                 json=payload,
             )
         except httpx.HTTPError as exc:
-            raise InferenceError(f"Inference request failed: {exc}") from exc
+            raise InferenceError(
+                f"Inference request failed for model {self.model} at {self.endpoint}: "
+                f"{type(exc).__name__}: {str(exc) or 'no response received'}"
+            ) from exc
         if response.status_code >= 400:
             snippet = response.text[:500]
             raise InferenceError(

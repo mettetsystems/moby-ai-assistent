@@ -31,6 +31,11 @@ class ToolOutcome(BaseModel):
     changed_files: list[str] = Field(default_factory=list)
     exit_code: int | None = None
     timed_out: bool = False
+    source_path: str | None = None
+    start_line: int | None = None
+    end_line: int | None = None
+    total_lines: int | None = None
+    truncated: bool = False
 
 
 class ToolDispatcher:
@@ -70,7 +75,16 @@ class ToolDispatcher:
         if name is WorkerToolName.READ_FILE:
             path = _require_str(arguments, "path")
             content = await self._filesystem.read_file(path)
-            return ToolOutcome(name=name, ok=True, output=_trim(content))
+            start = _optional_int(arguments, "start_line") or 1
+            limit = _optional_int(arguments, "max_lines")
+            if start < 1 or (limit is not None and not 1 <= limit <= 2000) or arguments.get("start_line") == 0:
+                raise ValueError("start_line must be positive; max_lines must be 1..2000")
+            lines = content.splitlines(keepends=True)
+            selected = lines[start - 1:start - 1 + (limit or len(lines))]
+            output, clipped = truncate_to_tokens("".join(selected), _OUTPUT_TOKEN_BUDGET)
+            return ToolOutcome(name=name, ok=True, output=output, source_path=path,
+                start_line=start, end_line=min(len(lines), start - 1 + len(selected)),
+                total_lines=len(lines), truncated=clipped or start > 1 or start - 1 + len(selected) < len(lines))
         if name is WorkerToolName.WRITE_FILE:
             path = _require_str(arguments, "path")
             contents = _require_str(arguments, "contents", allow_empty=True)

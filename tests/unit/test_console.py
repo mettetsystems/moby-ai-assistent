@@ -169,7 +169,7 @@ async def test_monitor_opens_failed_step_full_workflow(tmp_path: Path) -> None:
             finished_at=now,
             result=AttemptResult.FAIL,
             test_exit_code=1,
-            test_log_path=str(log_path),
+            test_log_path="fail.log",
         )
     )
     await runtime.store.events.append(
@@ -221,3 +221,14 @@ def test_console_http_settings_round_trip(tmp_path: Path) -> None:
         assert "collapsible" in page.text.lower() or "Failed steps" in page.text or "last 100" in page.text
     finally:
         server.shutdown()
+
+
+def test_monitor_log_paths_stay_inside_project(tmp_path: Path) -> None:
+    from mobyai.console.snapshot import read_log_text
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "test.log").write_text("actual test output")
+    (tmp_path / "secret.log").write_text("outside workspace")
+    assert read_log_text("test.log", root) == "actual test output"
+    assert read_log_text("../secret.log", root) == ""
+    assert read_log_text("missing.log", root) == ""
