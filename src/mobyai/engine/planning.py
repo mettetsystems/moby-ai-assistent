@@ -6,8 +6,12 @@ from datetime import UTC, datetime
 
 from mobyai.agents.planner import PlanValidationError, PlannerAgent
 from mobyai.dag.graph import TaskGraph
+from mobyai.context.contracts import contract_is_current
+from mobyai.context.tokenizer import estimate_tokens
 from mobyai.engine.state_machine import ProjectStateMachine
+from mobyai.execution.errors import WorkspaceError
 from mobyai.execution.filesystem import WorkspaceFilesystem
+from mobyai.execution.tools import ToolDispatcher
 from mobyai.execution.workspace import Workspace
 from mobyai.inference.base import InferenceError, SchemaRepairExhaustedError
 from mobyai.inference.service_manager import InferenceServiceManager
@@ -54,6 +58,7 @@ async def plan_project(
         await store.projects.save(project)
 
     existing_paths = await _existing_paths(workspace)
+    module_contracts = await _module_contract_listings(store, project.project_id, workspace)
     try:
         if services is not None:
             await services.ensure_role_available(AgentRole.PLANNER)
@@ -61,6 +66,8 @@ async def plan_project(
             project.objective,
             project_name=project.name,
             existing_paths=existing_paths,
+            inspector=_inspector(workspace),
+            module_contracts=module_contracts,
         )
     except _PLAN_FAILURES as exc:
         failed = ProjectStateMachine.transition(
@@ -122,6 +129,36 @@ async def _existing_paths(workspace: Workspace | None) -> list[str]:
         return await files.list_tree(".", max_entries=200)
     except OSError:
         return []
+
+
+def _inspector(workspace: Workspace | None) -> ToolDispatcher | None:
+    if workspace is None or not workspace.root.exists():
+        return None
+    return ToolDispatcher.from_workspace(workspace)
+
+
+async def _module_contract_listings(
+    store: StateStore, project_id: str, workspace: Workspace | None = None,
+    token_budget: int = 8000,
+) -> list[str]:
+    if workspace is None:
+        return []
+    files = WorkspaceFilesystem(workspace)
+    items = await store.contracts.list_for_project(project_id)
+    selected: list[str] = []
+    remaining = token_budget
+    for item in sorted(items, key=lambda item: item.path):
+        try:
+            source = await files.read_file(item.path)
+        except (OSError, ValueError, WorkspaceError):
+            continue
+        if not contract_is_current(item, source):
+            continue
+        cost = estimate_tokens(item.rendered + "\n\n")
+        if cost <= remaining:
+            selected.append(item.rendered)
+            remaining -= cost
+    return selected
 
 
 def _apply_plan_metadata(

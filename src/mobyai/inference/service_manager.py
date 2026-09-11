@@ -369,14 +369,25 @@ def device_for_role(config: AppConfig, role: AgentRole) -> int | str | None:
     return config.models.for_role(role).gpu
 
 
+_DEFAULT_CTX = {
+    AgentRole.PLANNER: "32768",
+    AgentRole.ORCHESTRATOR: "16384",
+    AgentRole.WORKER: "65536",
+}
+
+
 def render_launch(config: AppConfig, role: AgentRole) -> list[str]:
     model = config.models.for_role(role)
+    ctx = _DEFAULT_CTX[role]
+    if model.inference is not None and model.inference.max_model_len is not None:
+        ctx = str(model.inference.max_model_len)
     values = {
         "model": model.model,
         "endpoint": model.endpoint,
         "port": _endpoint_port(model.endpoint),
         "device": "" if device_for_role(config, role) is None else str(device_for_role(config, role)),
         "quantization": model.quantization or "",
+        "ctx": ctx,
     }
     return resolve_launch_argv(
         [_substitute(part, values) for part in model.launch]

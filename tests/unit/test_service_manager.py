@@ -133,6 +133,12 @@ def test_managed_example_loads() -> None:
     argv = render_launch(config, AgentRole.WORKER)
     assert config.models.worker.model in argv
     assert "9800" in argv
+    assert "65536" in argv
+    assert "--flash-attn" in argv
+    planner_argv = render_launch(config, AgentRole.PLANNER)
+    assert "32768" in planner_argv
+    orch_argv = render_launch(config, AgentRole.ORCHESTRATOR)
+    assert "16384" in orch_argv
 
 
 def test_device_for_role_uses_hardware_not_constants() -> None:

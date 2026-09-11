@@ -37,3 +37,24 @@ Run tests/unit/test_context_packer.py and tests/unit/test_tools.py for dependenc
 mapping, exact constraints, failure provenance, tiny budgets, range validation,
 and source retrieval. Full GPU/model evaluation remains a separate integration
 exercise; these tests use deterministic local fixtures.
+
+## Module summaries and planner inspection
+
+Successful worker tasks persist Python API summaries separately from task/dependency
+contracts. Each summary stores a SHA-256 source fingerprint in its payload. Both
+planner listings and worker import substitution check the current source before
+using a summary; missing, changed, or legacy unfingerprinted summaries are skipped.
+Workers fall back to source retrieval. Summaries preserve async functions, argument
+defaults, positional-only and keyword-only boundaries, and method decorators.
+They describe syntax, not a proof of behavior.
+
+Planner contract listings include only complete current summaries within an 8,000
+estimated-token budget, in deterministic path order. Read-only inspection tools
+provide further retrieval; this is not a whole-conversation token limit or semantic
+relevance ranking. Planner inspection cannot execute mutation tools.
+
+Range reads also accept end_line and the legacy offset/limit aliases (offset is
+1-based). Conflicting aliases are rejected. max_lines/limit is capped at 2,000;
+truncation guidance is included inside the output token cap. Existing max_lines
+calls retain plain body output and structured provenance; legacy range forms
+include their source-range header.

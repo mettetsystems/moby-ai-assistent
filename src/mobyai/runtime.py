@@ -74,7 +74,8 @@ class Runtime:
                     max_repair_attempts=repairs,
                     settings=config.models.planner,
                     refresh=refresh,
-                )
+                ),
+                max_inspect_turns=config.runtime.max_planner_inspect_turns,
             ),
             OrchestratorAgent(
                 StructuredGenerator(

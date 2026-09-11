@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from mobyai.context.contracts import source_digest
 from mobyai.context.errors import ContextLookupError
 from mobyai.context.log_reducer import LogReducer
 from mobyai.context.packer import ContextPacker
@@ -12,6 +13,7 @@ from mobyai.execution.filesystem import WorkspaceFilesystem
 from mobyai.execution.logs import AttemptLogStore, format_command_log, parse_command_log
 from mobyai.execution.workspace import Workspace
 from mobyai.models.attempt import AttemptResult, TaskAttempt
+from mobyai.models.contract import ModuleContract
 from mobyai.models.task import TaskStatus
 from mobyai.state.memory import InMemoryStateStore
 from tests.helpers import FROZEN_NOW, make_project, make_task
@@ -320,3 +322,38 @@ async def test_compression_keeps_failure_identity_and_source(tmp_path: Path) -> 
     assert "tests/test_api.py::test_id" in context.render()
     assert ".mobyai/attempt.log" in context.render()
     assert "exit_code: 1" in context.render()
+async def test_import_uses_stored_contract_not_body(tmp_path: Path) -> None:
+    space, files = _workspace(tmp_path)
+    await _write(
+        files,
+        "src/app.py",
+        "from src.db import connect\n\ndef main():\n    return connect()\n",
+    )
+    await _write(
+        files,
+        "src/db.py",
+        "HIDDEN_IMPL = 'should_not_appear'\n\ndef connect():\n    return 1\n",
+    )
+    contract = ModuleContract(
+        project_id="proj-1",
+        path="src/db.py",
+        task_id="STEP_000",
+        rendered="src/db.py\ndef connect() -> int",
+        payload={"functions": [{"name": "connect", "args": [], "returns": "int"}], "source_sha256": source_digest(await files.read_file("src/db.py"))},
+        updated_at=FROZEN_NOW,
+    )
+    packer = ContextPacker(files)
+    packed = await packer.pack(
+        make_project(workspace_root=space.root),
+        make_task("STEP_002", target_files=["src/app.py"]),
+        token_budget=48000,
+        contracts={"src/db.py": contract},
+    )
+    rendered = packed.render()
+    imported = packed.files[-1]
+    assert imported.path == "src/db.py"
+    assert imported.from_contract is True
+    assert "[contract]" in rendered
+    assert "def connect() -> int" in rendered
+    assert "HIDDEN_IMPL" not in rendered
+    assert "def main()" in rendered

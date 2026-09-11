@@ -17,12 +17,14 @@ runtime:
   max_output_bytes: 1048576
   max_log_bytes: 52428800
   max_schema_repair_attempts: 2
-  inference_timeout_seconds: 120
+  inference_timeout_seconds: 300
   max_worker_turns: 8
+  max_planner_inspect_turns: 3
 
 context:
   worker_token_budget: 48000
   log_tail_lines: 150
+  prefer_import_contracts: true
 
 persistence:
   database_path: ~/MobyAI/mobyai.db
@@ -53,7 +55,8 @@ models:
     gpu: 0
     endpoint: http://127.0.0.1:9802
     quantization: q4
-    kv_cache_dtype: fp8
+    inference:
+      max_model_len: 32768
     launch:
       - llama
       - serve
@@ -63,15 +66,28 @@ models:
       - 127.0.0.1
       - --port
       - "{port}"
+      - --ctx-size
+      - "{ctx}"
+      - --flash-attn
+      - "on"
+      - --cache-type-k
+      - q8_0
+      - --cache-type-v
+      - q8_0
+      - --parallel
+      - "1"
       - -ngl
       - "99"
       - --jinja
   orchestrator:
     provider: openai_compatible
     engine: llama.cpp
-    model: "Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M"
+    model: "Qwen/Qwen2.5-7B-Instruct-GGUF:Q5_K_M"
     gpu: 1
     endpoint: http://127.0.0.1:9801
+    quantization: q5
+    inference:
+      max_model_len: 16384
     launch:
       - llama
       - serve
@@ -81,6 +97,16 @@ models:
       - 127.0.0.1
       - --port
       - "{port}"
+      - --ctx-size
+      - "{ctx}"
+      - --flash-attn
+      - "on"
+      - --cache-type-k
+      - q8_0
+      - --cache-type-v
+      - q8_0
+      - --parallel
+      - "1"
       - -ngl
       - "99"
       - --jinja
@@ -90,6 +116,9 @@ models:
     model: "unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M"
     gpu: 0
     endpoint: http://127.0.0.1:9800
+    quantization: q4
+    inference:
+      max_model_len: 65536
     launch:
       - llama
       - serve
@@ -99,13 +128,16 @@ models:
       - 127.0.0.1
       - --port
       - "{port}"
+      - --ctx-size
+      - "{ctx}"
+      - --flash-attn
+      - "on"
+      - --cache-type-k
+      - q8_0
+      - --cache-type-v
+      - q8_0
+      - --parallel
+      - "1"
       - -ngl
       - "99"
       - --jinja
-    inference:
-      tensor_parallel_size: 1
-      max_model_len: 65536
-      kv_cache_dtype: fp8
-      gpu_memory_utilization: 0.92
-      enable_chunked_prefill: true
-      max_num_seqs: 16

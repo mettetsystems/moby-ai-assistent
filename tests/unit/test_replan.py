@@ -14,6 +14,7 @@ from mobyai.inference.fake import FakeInferenceProvider, FakeInferenceServiceMan
 from mobyai.inference.structured import StructuredGenerator
 from mobyai.models.checkpoint import Checkpoint, CheckpointKind
 from mobyai.models.config import AgentRole
+from mobyai.models.contract import ModuleContract
 from mobyai.models.escalation import EscalationPackage
 from mobyai.models.orchestrator import OrchestratorDecision
 from mobyai.models.planner import DAGPatch
@@ -177,6 +178,29 @@ async def test_replan_patches_branch_and_preserves_passed(tmp_path: Path) -> Non
     assert events[-1].event == "dag_replanned"
     assert "STEP_001" in provider.requests[0].messages[1].content
     assert "PASSED" in provider.requests[0].messages[1].content
+
+
+async def test_replan_includes_module_contracts(tmp_path: Path) -> None:
+    store, workspace = await _escalated_store(tmp_path)
+    from mobyai.context.contracts import source_digest
+    source = "def connect() -> int:\n    return 1\n"
+    (workspace.root / "src").mkdir(exist_ok=True)
+    (workspace.root / "src/db.py").write_text(source)
+    await store.contracts.upsert(
+        ModuleContract(
+            project_id="proj-1",
+            path="src/db.py",
+            task_id="STEP_000",
+            rendered="src/db.py\ndef connect() -> int",
+            payload={"source_sha256": source_digest(source)},
+            updated_at=FROZEN_NOW,
+        )
+    )
+    provider, agent = _planner([json.dumps(_patch_payload())])
+    project = await store.projects.get("proj-1")
+    assert project is not None
+    await replan_project(project, store, agent, workspace=workspace, now=FROZEN_NOW)
+    assert "def connect() -> int" in provider.requests[0].messages[1].content
 
 
 async def test_invalid_patch_is_repaired(tmp_path: Path) -> None:
@@ -351,3 +375,23 @@ async def test_run_project_replans_then_completes(tmp_path: Path) -> None:
     assert (await store.tasks.get("proj-1", "STEP_001B")).status == TaskStatus.PASSED
     assert (await store.tasks.get("proj-1", "STEP_002")).status == TaskStatus.PASSED
     assert (await store.tasks.get("proj-1", "STEP_000")).status == TaskStatus.PASSED
+
+
+async def test_replan_inspects_then_patches(tmp_path: Path) -> None:
+    store, workspace = await _escalated_store(tmp_path)
+    (workspace.root / "src").mkdir()
+    (workspace.root / "src" / "app.py").write_text("BROKEN = True\n", encoding="utf-8")
+    inspect = {
+        "inspect_calls": [
+            {"name": "read_file", "arguments": {"path": "src/app.py"}},
+        ]
+    }
+    provider, agent = _planner([json.dumps(inspect), json.dumps(_patch_payload())])
+    project = await store.projects.get("proj-1")
+    assert project is not None
+    result = await replan_project(
+        project, store, agent, workspace=workspace, now=FROZEN_NOW
+    )
+    assert result.project.state == ProjectState.READY
+    assert "BROKEN" in provider.requests[1].messages[-1].content
+    assert (workspace.root / "src" / "app.py").read_text(encoding="utf-8") == "BROKEN = True\n"

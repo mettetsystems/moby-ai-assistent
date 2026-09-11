@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 from mobyai.agents.prompts.worker import TOOL_FEEDBACK_PROMPT
 from mobyai.agents.worker import WorkerAgent
+from mobyai.context.contracts import record_module_contracts
 from mobyai.context.packer import ContextPacker
 from mobyai.context.errors import ContextBudgetError
 from mobyai.dag.graph import TaskGraph
@@ -86,6 +87,7 @@ async def execute_task(
     extra_instruction: str | None = None,
     now: datetime | None = None,
     services: InferenceServiceManager | None = None,
+    prefer_import_contracts: bool = True,
 ) -> TaskExecutionResult:
     """Run one Worker attempt: tools → filesystem → harness tests.
 
@@ -116,7 +118,11 @@ async def execute_task(
         tests,
         timeout_seconds=command_timeout_seconds,
     )
-    packer = ContextPacker(filesystem, store)
+    packer = ContextPacker(
+        filesystem,
+        store,
+        prefer_import_contracts=prefer_import_contracts,
+    )
 
     project, task, attempt = await _enter_working(
         project, task, store, timestamp
@@ -264,6 +270,14 @@ async def execute_task(
             timestamp,
             f"{project.project_id}-{task.task_id}-complete-{attempt.attempt_number}",
             {"task_id": task.task_id, "changed_files": changed_files},
+        )
+        await record_module_contracts(
+            store,
+            filesystem,
+            project_id=project.project_id,
+            task_id=task.task_id,
+            paths=[*task.target_files, *changed_files],
+            now=timestamp,
         )
         await _record_event(
             store,

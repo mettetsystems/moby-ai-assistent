@@ -6,6 +6,7 @@ from collections.abc import Sequence
 
 from mobyai.models.attempt import TaskAttempt
 from mobyai.models.checkpoint import Checkpoint
+from mobyai.models.contract import ModuleContract
 from mobyai.models.event import EventRecord
 from mobyai.models.project import Project
 from mobyai.models.snapshot import ProjectSnapshot
@@ -139,6 +140,29 @@ class InMemoryEventRepository:
         return [item.model_copy(deep=True) for item in matches]
 
 
+class InMemoryContractRepository:
+    def __init__(self) -> None:
+        self._contracts: dict[tuple[str, str], ModuleContract] = {}
+
+    async def upsert(self, contract: ModuleContract) -> None:
+        self._contracts[(contract.project_id, contract.path)] = contract.model_copy(
+            deep=True
+        )
+
+    async def get(self, project_id: str, path: str) -> ModuleContract | None:
+        item = self._contracts.get((project_id, path))
+        return item.model_copy(deep=True) if item is not None else None
+
+    async def list_for_project(self, project_id: str) -> list[ModuleContract]:
+        matches = [
+            item
+            for (pid, _path), item in self._contracts.items()
+            if pid == project_id
+        ]
+        matches.sort(key=lambda item: item.path)
+        return [item.model_copy(deep=True) for item in matches]
+
+
 class InMemoryStateStore:
     """Convenience facade used by tests that should not touch disk."""
 
@@ -148,6 +172,7 @@ class InMemoryStateStore:
         self.checkpoints = InMemoryCheckpointRepository()
         self.attempts = InMemoryAttemptRepository()
         self.events = InMemoryEventRepository()
+        self.contracts = InMemoryContractRepository()
 
     async def load_snapshot(self, project_id: str) -> ProjectSnapshot | None:
         project = await self.projects.get(project_id)

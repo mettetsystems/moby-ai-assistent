@@ -88,6 +88,7 @@ async def advance_project(
     command_timeout_seconds: int = 600,
     now: datetime | None = None,
     services: InferenceServiceManager | None = None,
+    prefer_import_contracts: bool = True,
 ) -> OrchestrationStep:
     """Take one outer step: complete, block, dispatch, retry, or escalate."""
     timestamp = now or datetime.now(UTC)
@@ -132,6 +133,7 @@ async def advance_project(
         command_timeout_seconds=command_timeout_seconds,
         now=timestamp,
         services=services,
+        prefer_import_contracts=prefer_import_contracts,
     )
     if execution.passed:
         graph = TaskGraph(await store.tasks.list_for_project(project.project_id))
@@ -172,6 +174,7 @@ async def run_project(
     planner: PlannerAgent | None = None,
     max_replans: int = 3,
     services: InferenceServiceManager | None = None,
+    prefer_import_contracts: bool = True,
 ) -> OrchestrationStep:
     """Advance until complete, blocked, escalating, failed, or max_steps."""
     timestamp = now or datetime.now(UTC)
@@ -209,6 +212,7 @@ async def run_project(
             command_timeout_seconds=command_timeout_seconds,
             now=timestamp,
             services=services,
+            prefer_import_contracts=prefer_import_contracts,
         )
         current = last.project
         if current.state in {ProjectState.COMPLETED, ProjectState.FAILED}:

@@ -14,6 +14,8 @@ DUAL_GPU_CONFIG = REPO_ROOT / "config" / "examples" / "dual_gpu.yaml"
 def test_default_yaml_loads() -> None:
     config = AppConfig.from_yaml(DEFAULT_CONFIG)
     assert config.runtime.max_task_attempts == 2
+    assert config.runtime.max_planner_inspect_turns == 3
+    assert config.context.prefer_import_contracts is True
     assert config.models.planner.endpoint == "http://127.0.0.1:9802"
     assert config.models.worker.inference is not None
     assert config.models.worker.inference.kv_cache_dtype == "fp8"

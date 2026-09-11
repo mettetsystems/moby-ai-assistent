@@ -14,6 +14,8 @@ class WorkerToolName(StrEnum):
     APPLY_PATCH = "apply_patch"
     LIST_DIRECTORY = "list_directory"
     SEARCH_CODE = "search_code"
+    GLOB = "glob"
+    FIND_FILES = "find_files"
     RUN_TEST = "run_test"
     RUN_COMMAND = "run_command"
 

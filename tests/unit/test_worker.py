@@ -114,6 +114,10 @@ async def test_execute_task_applies_tools_and_passes(tmp_path: Path) -> None:
     assert CheckpointKind.TASK_COMPLETION in kinds
     events = await store.events.list_for_project("proj-1")
     assert [item.event for item in events] == ["task_dispatched", "task_passed"]
+    contract = await store.contracts.get("proj-1", "src/app.py")
+    assert contract is not None
+    assert contract.task_id == "STEP_001"
+    assert "def run()" in contract.rendered
 
 
 async def test_chat_dump_does_not_write_files(tmp_path: Path) -> None:
@@ -144,6 +148,7 @@ async def test_chat_dump_does_not_write_files(tmp_path: Path) -> None:
     assert stored is not None
     assert stored.last_error is not None
     assert "src/app.py" in stored.last_error
+    assert await store.contracts.get("proj-1", "src/app.py") is None
 
 
 async def test_path_escape_is_rejected_and_task_fails(tmp_path: Path) -> None:

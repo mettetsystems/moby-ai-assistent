@@ -103,11 +103,13 @@ class RuntimeConfig(_StrictModel):
     max_schema_repair_attempts: int = Field(default=2, ge=0)
     inference_timeout_seconds: int = Field(default=120, ge=1)
     max_worker_turns: int = Field(default=8, ge=1)
+    max_planner_inspect_turns: int = Field(default=3, ge=0)
 
 
 class ContextConfig(_StrictModel):
     worker_token_budget: int = Field(default=48000, ge=1)
     log_tail_lines: int = Field(default=150, ge=1)
+    prefer_import_contracts: bool = True
 
 
 class InferenceServicesConfig(_StrictModel):

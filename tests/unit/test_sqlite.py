@@ -75,9 +75,10 @@ async def test_initialize_creates_schema(tmp_path: Path) -> None:
         "task_attempts",
         "checkpoints",
         "events",
+        "module_contracts",
     }.issubset(tables)
     versions = [row[0] for row in conn.execute("SELECT version FROM schema_migrations")]
-    assert versions == [1]
+    assert versions == [1, 2]
     assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
     conn.close()
 
@@ -236,3 +237,64 @@ async def test_missing_records_return_none(tmp_path: Path) -> None:
         assert await store.tasks.get("missing", "STEP_001") is None
         assert await store.checkpoints.latest("missing") is None
         assert await store.load_snapshot("missing") is None
+
+
+async def test_module_contract_round_trip(tmp_path: Path) -> None:
+    from mobyai.models.contract import ModuleContract
+
+    async with SqliteStateStore(tmp_path / "mobyai.db") as store:
+        await store.projects.save(make_project())
+        contract = ModuleContract(
+            project_id="proj-1",
+            path="src/db.py",
+            task_id="STEP_001",
+            rendered="src/db.py\ndef connect() -> int",
+            payload={"functions": [{"name": "connect", "args": [], "returns": "int"}]},
+            updated_at=FROZEN_NOW,
+        )
+        await store.contracts.upsert(contract)
+        loaded = await store.contracts.get("proj-1", "src/db.py")
+        assert loaded is not None
+        assert loaded.rendered == contract.rendered
+        assert loaded.payload["functions"][0]["name"] == "connect"
+        listed = await store.contracts.list_for_project("proj-1")
+        assert [item.path for item in listed] == ["src/db.py"]
+        updated = contract.model_copy(
+            update={"rendered": "src/db.py\ndef connect(dsn: str) -> int", "task_id": "STEP_001B"}
+        )
+        await store.contracts.upsert(updated)
+        again = await store.contracts.get("proj-1", "src/db.py")
+        assert again is not None
+        assert again.task_id == "STEP_001B"
+        assert "dsn: str" in again.rendered
+
+
+async def test_v2_migrates_existing_v1_database(tmp_path: Path) -> None:
+    from mobyai.state.migrations import SCHEMA_V1, apply_migrations
+
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(SCHEMA_V1)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO schema_migrations (version, applied_at) VALUES (1, ?)",
+        (FROZEN_NOW.isoformat(),),
+    )
+    conn.commit()
+    conn.close()
+
+    async with SqliteStateStore(db_path) as store:
+        await store.projects.save(make_project())
+        assert await store.contracts.list_for_project("proj-1") == []
+
+    conn = sqlite3.connect(db_path)
+    versions = [row[0] for row in conn.execute("SELECT version FROM schema_migrations")]
+    assert 2 in versions
+    tables = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    }
+    assert "module_contracts" in tables
+    conn.close()

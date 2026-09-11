@@ -1,5 +1,6 @@
 """Prompt context construction. Independent of the inference provider."""
 
+from mobyai.context.contracts import extract_python_contract, record_module_contracts, render_contract
 from mobyai.context.errors import ContextLookupError
 from mobyai.context.log_reducer import LogReducer, ReducedLog
 from mobyai.context.packer import DEFAULT_CONSTRAINTS, ContextPacker
@@ -16,5 +17,8 @@ __all__ = [
     "ReducedLog",
     "WorkerContext",
     "estimate_tokens",
+    "extract_python_contract",
+    "record_module_contracts",
+    "render_contract",
     "truncate_to_tokens",
 ]

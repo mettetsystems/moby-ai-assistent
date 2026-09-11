@@ -11,7 +11,7 @@ from mobyai.execution.filesystem import SearchHit, WorkspaceFilesystem
 from mobyai.execution.logs import AttemptLogStore, format_command_log, parse_command_log
 from mobyai.execution.patches import apply_patch
 from mobyai.execution.tests import TestRunner, passed
-from mobyai.execution.tools import ToolDispatcher, ToolOutcome, split_command
+from mobyai.execution.tools import PLANNER_INSPECT_TOOLS, ToolDispatcher, ToolOutcome, split_command
 from mobyai.execution.workspace import Workspace
 
 __all__ = [
@@ -19,6 +19,7 @@ __all__ = [
     "CommandResult",
     "CommandRunner",
     "DestructiveCommandError",
+    "PLANNER_INSPECT_TOOLS",
     "PatchError",
     "PathEscapeError",
     "SearchHit",

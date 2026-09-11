@@ -12,6 +12,7 @@ from typing import Any, TypeVar
 
 from mobyai.models.attempt import AttemptResult, TaskAttempt
 from mobyai.models.checkpoint import Checkpoint, CheckpointKind
+from mobyai.models.contract import ModuleContract
 from mobyai.models.event import EventRecord
 from mobyai.models.project import Project, ProjectState
 from mobyai.models.snapshot import ProjectSnapshot
@@ -163,6 +164,20 @@ def _event_from_row(row: sqlite3.Row) -> EventRecord:
         event=row["event"],
         attempt=row["attempt"],
         payload=_load_json(row["payload"], {}),
+    )
+
+
+def _contract_from_row(row: sqlite3.Row) -> ModuleContract:
+    payload = _load_json(row["payload"], {})
+    if not isinstance(payload, dict):
+        payload = {}
+    return ModuleContract(
+        project_id=row["project_id"],
+        path=row["path"],
+        task_id=row["task_id"],
+        rendered=row["rendered"],
+        payload=payload,
+        updated_at=_parse_dt(row["updated_at"]),
     )
 
 
@@ -517,6 +532,64 @@ class SqliteEventRepository:
         return await self._db.run(query)
 
 
+class SqliteContractRepository:
+    def __init__(self, database: SqliteDatabase) -> None:
+        self._db = database
+
+    async def upsert(self, contract: ModuleContract) -> None:
+        def write(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """
+                INSERT INTO module_contracts (
+                    project_id, path, task_id, rendered, payload, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_id, path) DO UPDATE SET
+                    task_id = excluded.task_id,
+                    rendered = excluded.rendered,
+                    payload = excluded.payload,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    contract.project_id,
+                    contract.path,
+                    contract.task_id,
+                    contract.rendered,
+                    _dump_json(contract.payload),
+                    _dt_to_str(contract.updated_at),
+                ),
+            )
+            conn.commit()
+
+        await self._db.run(write)
+
+    async def get(self, project_id: str, path: str) -> ModuleContract | None:
+        def query(conn: sqlite3.Connection) -> ModuleContract | None:
+            row = conn.execute(
+                """
+                SELECT * FROM module_contracts
+                WHERE project_id = ? AND path = ?
+                """,
+                (project_id, path),
+            ).fetchone()
+            return _contract_from_row(row) if row is not None else None
+
+        return await self._db.run(query)
+
+    async def list_for_project(self, project_id: str) -> list[ModuleContract]:
+        def query(conn: sqlite3.Connection) -> list[ModuleContract]:
+            rows = conn.execute(
+                """
+                SELECT * FROM module_contracts
+                WHERE project_id = ?
+                ORDER BY path ASC
+                """,
+                (project_id,),
+            ).fetchall()
+            return [_contract_from_row(row) for row in rows]
+
+        return await self._db.run(query)
+
+
 class SqliteStateStore:
     """Durable store. Reconstructs a project by reading tables, not model context."""
 
@@ -528,6 +601,7 @@ class SqliteStateStore:
         self.checkpoints = SqliteCheckpointRepository(self._db)
         self.attempts = SqliteAttemptRepository(self._db)
         self.events = SqliteEventRepository(self._db)
+        self.contracts = SqliteContractRepository(self._db)
 
     async def initialize(self) -> None:
         await self._db.initialize()

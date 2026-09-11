@@ -64,7 +64,7 @@ Reference defaults (still overridable):
 | Role | Hugging Face GGUF spec | Endpoint | GPU |
 |------|------------------------|----------|-----|
 | Planner | `Qwen/Qwen3-32B-GGUF:Q4_K_M` | `http://127.0.0.1:9802` | 0 |
-| Orchestrator | `Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M` | `http://127.0.0.1:9801` | 1 |
+| Orchestrator | `Qwen/Qwen2.5-7B-Instruct-GGUF:Q5_K_M` | `http://127.0.0.1:9801` | 1 |
 | Worker | `unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M` | `http://127.0.0.1:9800` | 0 |
 
 Runtime preset `default` is **managed** llama.cpp (MobyAI spawns `llama serve`). `external` uses the same model ids but you start the servers. `custom` asks for mode first.
@@ -260,11 +260,12 @@ GPU index (`0`, `1`, …) or `cpu`. These numbers are not hard-coded in Python. 
 
 | Field | Meaning |
 |-------|---------|
-| `model` | llama.cpp `-hf` spec (`org/name:QUANT`) or the id `GET /v1/models` returns. Setup defaults: Planner `Qwen/Qwen3-32B-GGUF:Q4_K_M`, Orchestrator `Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M`, Worker `unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M`. |
+| `model` | llama.cpp `-hf` spec (`org/name:QUANT`) or the id `GET /v1/models` returns. Setup defaults: Planner `Qwen/Qwen3-32B-GGUF:Q4_K_M`, Orchestrator `Qwen/Qwen2.5-7B-Instruct-GGUF:Q5_K_M`, Worker `unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M`. |
 | `endpoint` | Base URL, no `/v1/chat/completions` suffix. Example: `http://127.0.0.1:9800` |
 | `provider` | Keep `openai_compatible` unless you add another client |
 | `engine` | Label only (`llama.cpp`, vllm, ollama, …). Not an imported SDK |
-| `launch` | Argv used **only** in managed mode. Tokens `{model}` and `{port}` are substituted |
+| `inference.max_model_len` | llama.cpp `--ctx-size` via `{ctx}`. Defaults: Planner 32768, Orchestrator 16384, Worker 65536 (Worker packer uses 48000). |
+| `launch` | Argv used **only** in managed mode. Tokens `{model}`, `{port}`, and `{ctx}` are substituted. Includes flash attention, q8_0 KV cache, and `--parallel 1` so one slot gets the full window. |
 
 Default ports in the bundled examples:
 
