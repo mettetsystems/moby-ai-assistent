@@ -113,7 +113,9 @@ async def test_execute_task_applies_tools_and_passes(tmp_path: Path) -> None:
     assert CheckpointKind.TASK_DISPATCH in kinds
     assert CheckpointKind.TASK_COMPLETION in kinds
     events = await store.events.list_for_project("proj-1")
-    assert [item.event for item in events] == ["task_dispatched", "task_passed"]
+    assert [item.event for item in events] == ["task_dispatched", "tool_finished", "task_passed"]
+    assert events[1].payload["tool"] == "write_file"
+    assert events[1].payload["ok"] is True
     contract = await store.contracts.get("proj-1", "src/app.py")
     assert contract is not None
     assert contract.task_id == "STEP_001"

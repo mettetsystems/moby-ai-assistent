@@ -82,6 +82,7 @@ class Runtime:
                     registry.get(AgentRole.ORCHESTRATOR),
                     max_repair_attempts=repairs,
                     settings=config.models.orchestrator,
+                    recovery_enabled=False,
                     refresh=refresh,
                 )
             ),
@@ -97,11 +98,15 @@ class Runtime:
         )
 
     async def initialize(self) -> None:
+        from mobyai.tracing import configure
+        configure(self.config.tracing, self.config.persistence.database_path)
         init = getattr(self.store, "initialize", None)
         if init is not None:
             await init()
 
     async def aclose(self) -> None:
+        from mobyai.tracing import flush
+        flush()
         closer = getattr(self.services, "aclose", None)
         if closer is not None:
             await closer()

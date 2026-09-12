@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from mobyai.tracing import traced
+
 import json
 import shlex
 from collections.abc import Mapping, Sequence
@@ -25,6 +27,8 @@ _RANGE_HINT = (
 
 PLANNER_INSPECT_TOOLS: frozenset[WorkerToolName] = frozenset(
     {
+        WorkerToolName.RESEARCH_LOOKUP,
+        WorkerToolName.RESEARCH_SEARCH,
         WorkerToolName.READ_FILE,
         WorkerToolName.LIST_DIRECTORY,
         WorkerToolName.SEARCH_CODE,
@@ -86,6 +90,7 @@ class ToolDispatcher:
     ) -> list[ToolOutcome]:
         return [await self.execute(call, allowed=allowed) for call in calls]
 
+    @traced("tool.execute")
     async def execute(
         self,
         call: WorkerToolCall,
@@ -174,12 +179,26 @@ class ToolDispatcher:
             max_hits = _optional_int(arguments, "max_hits") or 100
             matches = await self._filesystem.glob_files(pattern, path, max_hits=max_hits)
             return ToolOutcome(name=name, ok=True, output="\n".join(matches))
+        if name is WorkerToolName.RESEARCH_LOOKUP:
+            from mobyai.research.client import research_lookup
+            result = await research_lookup(dict(arguments))
+            return ToolOutcome(name=name,ok=result.get('status')=='ok',output=json.dumps(result))
+        if name is WorkerToolName.RESEARCH_SEARCH:
+            from mobyai.research.access import internet_allowed
+            if not internet_allowed.get():
+                return ToolOutcome(name=name,ok=False,error='Internet research is gated until the post-second-failure planner handoff. Use research_lookup for local evidence.')
+            from mobyai.research.client import research_search
+            result = await research_search(dict(arguments))
+            return ToolOutcome(name=name, ok=result.get("status") == "ok",
+                               output=json.dumps(result, ensure_ascii=False))
         if name is WorkerToolName.RUN_TEST:
             command = split_command(arguments.get("command"))
             result = await self._tests.run(command, timeout_seconds=self._timeout_seconds)
             return _from_command(name, result)
         if name is WorkerToolName.RUN_COMMAND:
             command = split_command(arguments.get("command"))
+            if command[0] == "cd" or any(part in {"&&", "||", ";", "|"} for part in command):
+                raise ValueError("run_command uses argv, not shell syntax. Use cwd for the directory and separate calls for commands.")
             cwd = _optional_str(arguments, "cwd")
             result = await self._commands.run(
                 command,
@@ -216,6 +235,10 @@ def _from_command(name: WorkerToolName, result: CommandResult) -> ToolOutcome:
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )
+    if result.exit_code != 0:
+        from mobyai.execution.diagnostics import diagnose
+        diagnosis = diagnose(result.stdout + "\n" + result.stderr)
+        body = f"failure_category: {diagnosis.category}\nrecovery: {diagnosis.instruction}\n" + body
     return ToolOutcome(
         name=name,
         ok=result.exit_code == 0 and not result.timed_out,

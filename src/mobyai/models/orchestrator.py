@@ -29,6 +29,7 @@ class NextPayload(BaseModel):
 
 
 class OrchestratorResult(BaseModel):
+    cached_references_sufficient: bool = False
     model_config = ConfigDict(extra="forbid")
 
     decision_summary: str = Field(min_length=1)

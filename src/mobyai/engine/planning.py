@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from mobyai.tracing import traced
+
 from datetime import UTC, datetime
 
 from mobyai.agents.planner import PlanValidationError, PlannerAgent
@@ -34,6 +36,7 @@ class PlanningError(Exception):
     """Initial planning could not complete."""
 
 
+@traced("planner.plan")
 async def plan_project(
     project: Project,
     store: StateStore,
@@ -63,7 +66,7 @@ async def plan_project(
         if services is not None:
             await services.ensure_role_available(AgentRole.PLANNER)
         plan = await agent.create_plan(
-            project.objective,
+            project.objective + ("\nPrevious planning validation error to correct:\n" + project.last_error if (project.last_error or "").startswith("Planner recovery:") else ""),
             project_name=project.name,
             existing_paths=existing_paths,
             inspector=_inspector(workspace),

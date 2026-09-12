@@ -174,6 +174,14 @@ class InMemoryStateStore:
         self.events = InMemoryEventRepository()
         self.contracts = InMemoryContractRepository()
 
+    async def delete_project(self, project_id: str) -> None:
+        self.projects._projects.pop(project_id,None)
+        self.tasks._tasks.pop(project_id,None)
+        self.checkpoints._checkpoints.pop(project_id,None)
+        self.attempts._attempts = {key:value for key,value in self.attempts._attempts.items() if key[0]!=project_id}
+        self.contracts._contracts = {key:value for key,value in self.contracts._contracts.items() if key[0]!=project_id}
+        self.events._events = [event for event in self.events._events if event.project_id!=project_id]
+
     async def load_snapshot(self, project_id: str) -> ProjectSnapshot | None:
         project = await self.projects.get(project_id)
         if project is None:

@@ -21,6 +21,7 @@ from mobyai.dag.patch import DAGPatchError, affected_branch, apply_dag_patch
 from mobyai.dag.validator import DAGValidationError, validate_dag
 from mobyai.execution.tools import PLANNER_INSPECT_TOOLS, ToolDispatcher, format_tool_outcomes
 from mobyai.inference.structured import StructuredGenerator
+from mobyai.inference.recovery import recovery_stage, current_stage
 from mobyai.models.escalation import EscalationPackage
 from mobyai.models.inference import ChatMessage, ModelRequest
 from mobyai.models.planner import (
@@ -73,11 +74,13 @@ class PlannerAgent:
         ]
         inspect_turns = 0
         plan_repairs = 0
+        starting_stage = current_stage()
         last_error: Exception | None = None
         while True:
-            turn = await self._generator.generate(
-                ModelRequest(messages=messages), PlannerTurn
-            )
+            with recovery_stage(starting_stage + max(0, plan_repairs - 1)):
+                turn = await self._generator.generate(
+                    ModelRequest(messages=messages), PlannerTurn
+                )
             if (
                 turn.inspect_calls
                 and inspector is not None
@@ -160,11 +163,13 @@ class PlannerAgent:
         ]
         inspect_turns = 0
         plan_repairs = 0
+        starting_stage = current_stage()
         last_error: Exception | None = None
         while True:
-            turn = await self._generator.generate(
-                ModelRequest(messages=messages), PlannerPatchTurn
-            )
+            with recovery_stage(starting_stage + max(0, plan_repairs - 1)):
+                turn = await self._generator.generate(
+                    ModelRequest(messages=messages), PlannerPatchTurn
+                )
             if (
                 turn.inspect_calls
                 and inspector is not None

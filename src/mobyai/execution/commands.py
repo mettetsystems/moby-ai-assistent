@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from mobyai.tracing import traced
+
 import asyncio
 import os
 import signal
@@ -61,6 +63,7 @@ class CommandRunner:
         self.max_output_bytes = max_output_bytes
         self.allow_destructive = allow_destructive
 
+    @traced("command.run")
     async def run(
         self,
         command: list[str],
@@ -85,18 +88,27 @@ class CommandRunner:
         stderr_buf = _BoundedBuffer(self.max_output_bytes)
         started = time.monotonic()
         timed_out = False
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            cwd=str(workdir),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=str(workdir),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+        except FileNotFoundError:
+            return CommandResult(command=list(command), exit_code=127, stdout="",
+                stderr=f"Executable not found: {command[0]}. Install or configure the required toolchain.",
+                duration_seconds=round(time.monotonic() - started, 4))
         try:
             await asyncio.wait_for(
                 _drain(process, stdout_buf, stderr_buf),
                 timeout=timeout_seconds,
             )
+        except asyncio.CancelledError:
+            _kill_process_group(process.pid)
+            await process.wait()
+            raise
         except TimeoutError:
             timed_out = True
             _kill_process_group(process.pid)

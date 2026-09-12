@@ -603,6 +603,13 @@ class SqliteStateStore:
         self.events = SqliteEventRepository(self._db)
         self.contracts = SqliteContractRepository(self._db)
 
+    async def delete_project(self, project_id: str) -> None:
+        def delete(conn):
+            with conn:
+                for table in ('task_attempts','checkpoints','module_contracts','events','tasks','projects'):
+                    conn.execute(f'DELETE FROM {table} WHERE project_id=?',(project_id,))
+        await self._db.run(delete)
+
     async def initialize(self) -> None:
         await self._db.initialize()
 

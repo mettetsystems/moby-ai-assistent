@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from mobyai.tracing import traced
+
 from datetime import UTC, datetime
 
 from mobyai.agents.planner import PlanValidationError, PlannerAgent
@@ -44,6 +46,7 @@ class ReplanResult:
         self.tasks = tasks
 
 
+@traced("planner.replan")
 async def replan_project(
     project: Project,
     store: StateStore,
@@ -68,21 +71,25 @@ async def replan_project(
         await store.projects.save(project)
 
     loaded = package or await load_escalation_package(store, project.project_id)
+    if (project.last_error or '').startswith('Planner recovery:'):
+        loaded = loaded.model_copy(update={'decision_summary':(loaded.decision_summary or '') + '\nCorrect the previous replan validation error: ' + project.last_error})
     tasks = await store.tasks.list_for_project(project.project_id)
     existing_paths = await _existing_paths(workspace)
     module_contracts = await _module_contract_listings(store, project.project_id, workspace)
     try:
         if services is not None:
             await services.ensure_role_available(AgentRole.PLANNER)
-        patch = await agent.replan(
-            objective=project.objective,
-            project_name=project.name,
-            tasks=tasks,
-            package=loaded,
-            existing_paths=existing_paths,
-            inspector=_inspector(workspace),
-            module_contracts=module_contracts,
-        )
+        from mobyai.research.access import research_access
+        with research_access(loaded.failed_task.attempt_count >= 2 and '[RESEARCH_REQUIRED]' in (loaded.decision_summary or '')):
+            patch = await agent.replan(
+                objective=project.objective,
+                project_name=project.name,
+                tasks=tasks,
+                package=loaded,
+                existing_paths=existing_paths,
+                inspector=_inspector(workspace),
+                module_contracts=module_contracts,
+            )
     except _REPLAN_FAILURES as exc:
         failed = ProjectStateMachine.transition(
             project.model_copy(update={"last_error": str(exc)}),

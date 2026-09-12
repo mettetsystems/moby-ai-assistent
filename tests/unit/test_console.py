@@ -232,3 +232,121 @@ def test_monitor_log_paths_stay_inside_project(tmp_path: Path) -> None:
     assert read_log_text("test.log", root) == "actual test output"
     assert read_log_text("../secret.log", root) == ""
     assert read_log_text("missing.log", root) == ""
+
+
+def test_console_import_http_validation(tmp_path):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    path, runtime = _runtime(tmp_path)
+    service = ConsoleService(runtime, path, caller=asyncio.run)
+    service.workloads.create = AsyncMock(return_value={'project_id': 'import-test', 'name': 'Test'})
+    server = serve_console(service, host='127.0.0.1', port=0)
+    url = f'http://127.0.0.1:{server.server_address[1]}/api/projects'
+    try:
+        payload = {'name': 'Test', 'prompt': '# Requirements\nBuild the API'}
+        response = httpx.post(url, json=payload)
+        assert response.status_code == 201
+        service.workloads.create.assert_awaited_once_with(payload)
+        assert httpx.post(url, json=payload, headers={'Origin': 'https://example.com'}).status_code == 403
+        assert httpx.post(url, content='name=test').status_code == 415
+        assert httpx.post(url, content='{', headers={'Content-Type':'application/json'}).status_code == 400
+        assert service.workloads.create.await_count == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+async def test_console_http_stop_requires_two_verifications(tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    path, runtime = _runtime(tmp_path)
+    loop = asyncio.get_running_loop()
+    service = ConsoleService(runtime, path, caller=lambda coro: asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=5))
+    service.workloads.project_id = 'demo'
+    service.workloads.process = SimpleNamespace(pid=12345, returncode=None)
+    service.workloads._stop_current = AsyncMock()
+    server = serve_console(service, host='127.0.0.1', port=0)
+    base = f'http://127.0.0.1:{server.server_address[1]}'
+    try:
+        async with httpx.AsyncClient(base_url=base) as client:
+            denied = await client.post('/api/workloads/stop', json={'project_id':'demo'})
+            assert denied.status_code == 400
+            challenge = await client.post('/api/workloads/prepare-stop', json={'project_id':'demo'})
+            assert challenge.status_code == 200
+            payload = {**challenge.json(), 'confirmation':'wrong'}
+            assert (await client.post('/api/workloads/stop', json=payload)).status_code == 400
+            service.workloads._stop_current.assert_not_called()
+            payload['confirmation'] = 'demo'
+            assert (await client.post('/api/workloads/stop', json=payload)).status_code == 200
+            await service.workloads.stop_task
+            service.workloads._stop_current.assert_awaited_once()
+            assert (await client.post('/api/workloads/stop', json=payload)).status_code == 400
+    finally:
+        await asyncio.to_thread(server.shutdown)
+        server.server_close()
+
+
+def test_saving_settings_preserves_tracing_and_recovery_profiles(tmp_path):
+    path = tmp_path/'config.yaml'
+    path.write_text(DEFAULT_CONFIG.read_text())
+    overlay = overlay_path_for(path)
+    overlay.write_text(yaml.safe_dump({'tracing': {'enabled':True}, 'models': {'worker': {'recovery_sampling':[]}}}))
+    config = AppConfig.from_yaml(path)
+    save_settings_overlay(path, config)
+    config = AppConfig.from_yaml(path)
+    assert config.tracing.enabled
+    assert config.models.worker.recovery_sampling == []
+
+
+def test_workload_action_http_routes(tmp_path):
+    import asyncio
+    from unittest.mock import AsyncMock
+    path, runtime = _runtime(tmp_path)
+    service = ConsoleService(runtime, path, caller=asyncio.run)
+    for action in ('resume','restart','change_target'):
+        setattr(service.workloads,action,AsyncMock(return_value={'project_id':'demo'}))
+    server = serve_console(service,port=0)
+    try:
+        with httpx.Client(base_url=f'http://127.0.0.1:{server.server_address[1]}') as client:
+            for route, action in [('resume','resume'),('restart','restart'),('target','change_target')]:
+                payload = {'project_id':'demo','target_directory':'/tmp/example'}
+                response = client.post('/api/workloads/'+route,json=payload)
+                assert response.status_code == 200
+                getattr(service.workloads,action).assert_awaited_once_with(payload)
+                assert client.post('/api/workloads/'+route,json=payload,headers={'Origin':'https://example.com'}).status_code == 403
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+async def test_tracing_only_overlay_does_not_break_first_model_call(tmp_path):
+    from mobyai.console.settings import OverlayWatcher
+    from mobyai.inference.fake import FakeInferenceProvider
+    from pydantic import BaseModel
+    config = AppConfig.from_yaml(DEFAULT_CONFIG)
+    overlay = tmp_path/'config.overlay.yaml'
+    overlay.write_text('tracing:\n  enabled: true\n')
+    watcher = OverlayWatcher(overlay, config)
+    provider = FakeInferenceProvider(['{"ok": true}'])
+    class Result(BaseModel):
+        ok: bool
+    baseline = config.models.planner.sampling.model_dump()
+    generator = StructuredGenerator(provider, settings=config.models.planner, refresh=watcher.maybe_reload)
+    result = await generator.generate(ModelRequest(messages=[ChatMessage(role='user',content='test')]), Result)
+    assert result.ok
+    assert len(provider.requests) == 1
+    assert config.models.planner.sampling.model_dump() == baseline
+    # Later model changes still apply after a tracing-only first load.
+    overlay.write_text('models:\n  planner:\n    sampling:\n      temperature: 0.4\n')
+    watcher._mtime = None
+    watcher.maybe_reload()
+    assert config.models.planner.sampling.temperature == .4
+
+
+def test_model_settings_api_still_requires_models():
+    import pytest
+    config = AppConfig.from_yaml(DEFAULT_CONFIG)
+    with pytest.raises(ValueError, match='settings.models'):
+        apply_role_settings(config, {'tracing': {'enabled':True}})

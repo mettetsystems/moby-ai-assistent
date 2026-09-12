@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
+from mobyai.tracing import span, attribute
 
 import httpx
 
@@ -19,10 +21,12 @@ class OpenAICompatibleProvider:
         *,
         api_key: str | None = None,
         timeout_seconds: float = 120,
+        max_transport_retries: int = 2,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.endpoint = endpoint.rstrip("/")
         self.model = model
+        self.max_transport_retries = max(0, min(max_transport_retries, 5))
         self._owns_client = client is None
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
         self._client = client or httpx.AsyncClient(
@@ -45,10 +49,7 @@ class OpenAICompatibleProvider:
         if request.json_mode:
             payload["response_format"] = {"type": "json_object"}
         try:
-            response = await self._client.post(
-                join_url(self.endpoint, "/v1/chat/completions"),
-                json=payload,
-            )
+            response = await self._post(payload)
         except httpx.HTTPError as exc:
             raise InferenceError(
                 f"Inference request failed for model {self.model} at {self.endpoint}: "
@@ -64,6 +65,24 @@ class OpenAICompatibleProvider:
         except ValueError as exc:
             raise InferenceError("Inference response was not JSON") from exc
         return _parse_chat_completion(body, fallback_model=self.model)
+
+    async def _post(self, payload):
+        for attempt in range(self.max_transport_retries + 1):
+            with span("inference.http", attempt=attempt + 1) as active:
+                try:
+                    response = await self._client.post(
+                        join_url(self.endpoint, "/v1/chat/completions"), json=payload)
+                    attribute(active, "http.status_code", response.status_code)
+                except (httpx.TransportError,) as exc:
+                    attribute(active, "error.type", type(exc).__name__)
+                    if attempt >= self.max_transport_retries:
+                        raise
+                else:
+                    if response.status_code not in {429, 502, 503, 504} or attempt >= self.max_transport_retries:
+                        return response
+            # Only retry transient transport/service errors, with unchanged sampling.
+            await asyncio.sleep(min(2 ** attempt, 4))
+        raise AssertionError("unreachable")
 
     async def healthcheck(self) -> bool:
         return await openai_healthcheck(self._client, self.endpoint)

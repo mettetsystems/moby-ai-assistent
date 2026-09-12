@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from mobyai.tracing import traced
+
 import json
 from collections.abc import Callable
 from typing import Any, TypeVar
@@ -13,6 +15,7 @@ from mobyai.inference.base import (
     SchemaRepairExhaustedError,
     StructuredOutputError,
 )
+from mobyai.inference.recovery import current_stage, recovery_stage, sampling_steps
 from mobyai.models.config import RoleModelConfig
 from mobyai.models.inference import ChatMessage, ModelRequest
 
@@ -21,6 +24,7 @@ T = TypeVar("T", bound=BaseModel)
 _REPAIR_INSTRUCTION = (
     "Your previous reply was not valid structured output.\n"
     "Errors:\n{errors}\n\n"
+    "Required JSON schema:\n{schema}\n\n"
     "Return ONLY valid JSON that matches the required schema. "
     "Do not include markdown, comments, or explanation."
 )
@@ -66,24 +70,28 @@ class StructuredGenerator:
         max_repair_attempts: int = 2,
         settings: RoleModelConfig | None = None,
         refresh: Callable[[], None] | None = None,
+        recovery_enabled: bool = True,
     ) -> None:
         self.provider = provider
         self.max_repair_attempts = max(max_repair_attempts, 0)
         self.settings = settings
         self._refresh = refresh
+        self.recovery_enabled = recovery_enabled
 
+    @traced("model.structured")
     async def generate(
         self,
         request: ModelRequest,
         schema: type[T],
     ) -> T:
         request = self._with_live_settings(request)
-        response = await self.provider.generate(request)
+        response = await self._request(request)
         try:
             return parse_structured(response.content, schema)
         except StructuredOutputError as first_error:
             return await self._repair(request, schema, response.content, first_error)
 
+    @traced("model.schema_repair")
     async def _repair(
         self,
         request: ModelRequest,
@@ -94,19 +102,24 @@ class StructuredGenerator:
         messages = list(request.messages)
         last_error = error
         last_raw = previous
+        starting_stage = current_stage()
         for _attempt in range(self.max_repair_attempts):
             messages = [
                 *messages,
                 ChatMessage(role="assistant", content=last_raw or " "),
                 ChatMessage(
                     role="user",
-                    content=_REPAIR_INSTRUCTION.format(errors=str(last_error)),
+                    content=_REPAIR_INSTRUCTION.format(
+                        errors=str(last_error),
+                        schema=json.dumps(schema.model_json_schema(), ensure_ascii=False),
+                    ),
                 ),
             ]
-            repaired_request = self._with_live_settings(
-                request.model_copy(update={"messages": messages})
-            )
-            response = await self.provider.generate(repaired_request)
+            with recovery_stage(starting_stage + _attempt):
+                repaired_request = self._with_live_settings(
+                    request.model_copy(update={"messages": messages})
+                )
+            response = await self._request(repaired_request)
             last_raw = response.content
             try:
                 return parse_structured(response.content, schema)
@@ -118,12 +131,26 @@ class StructuredGenerator:
             attempts=self.max_repair_attempts,
         ) from last_error
 
+    async def _request(self, request):
+        from mobyai.tracing import span, attribute
+        with span("model.request", model=getattr(self.provider, "model", "unknown"),
+                  temperature=request.temperature, top_p=request.top_p,
+                  top_k=request.top_k) as active:
+            response = await self.provider.generate(request)
+            attribute(active, "prompt_tokens", response.prompt_tokens)
+            attribute(active, "completion_tokens", response.completion_tokens)
+            attribute(active, "finish_reason", response.finish_reason)
+            return response
+
     def _with_live_settings(self, request: ModelRequest) -> ModelRequest:
         if self._refresh is not None:
             self._refresh()
         if self.settings is None:
             return request
         sampling = self.settings.sampling
+        profiles = sampling_steps(sampling, self.settings.recovery_sampling)
+        if self.recovery_enabled and current_stage() and profiles:
+            sampling = profiles[min(current_stage(), len(profiles)) - 1]
         provider = self.provider
         endpoint = getattr(provider, "endpoint", None)
         if isinstance(endpoint, str):

@@ -7,6 +7,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from mobyai.console.timing import runtime_view
+from mobyai.engine.lease import project_is_running
 from mobyai.dag.graph import TaskGraph
 from mobyai.models.event import EventRecord
 from mobyai.models.project import Project
@@ -78,6 +80,8 @@ async def build_monitor(runtime: Runtime, project_id: str) -> dict[str, Any]:
     failed = [step for step in steps if step["failed"]]
     return {
         "project": _project_view(project),
+        "runtime": runtime_view(events, running=project_is_running(
+            runtime.config.persistence.database_path, project_id)),
         "unscoped_events": [format_event(event) for event in unscoped][-TAIL_LINES:],
         "steps": steps,
         "failed": failed,
@@ -92,6 +96,7 @@ def _project_view(project: Project) -> dict[str, Any]:
         "current_task_id": project.current_task_id,
         "last_error": project.last_error,
         "objective": project.objective,
+        "workspace_root": str(project.workspace_root),
     }
 
 

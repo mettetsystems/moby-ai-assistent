@@ -383,3 +383,17 @@ async def test_resume_from_sqlite_after_pause(tmp_path: Path) -> None:
     assert "resumed to NEW" in out
     assert "COMPLETED" in out
     await runtime.aclose()
+
+
+async def test_unexpected_planner_error_leaves_resumable_pause(tmp_path, monkeypatch):
+    from tests.unit.test_reliability import project
+    from unittest.mock import AsyncMock
+    config_path, runtime = _runtime(tmp_path)
+    item = project(tmp_path, ProjectState.NEW)
+    await runtime.store.projects.save(item)
+    monkeypatch.setattr(runtime.planner, 'create_plan', AsyncMock(side_effect=ValueError('unexpected settings error')))
+    with pytest.raises(ValueError, match='unexpected settings error'):
+        await async_main(['--config',str(config_path),'run',item.project_id],runtime=runtime,stdout=StringIO())
+    saved = await runtime.store.projects.get(item.project_id)
+    assert saved.state == ProjectState.PAUSED
+    assert saved.paused_from == ProjectState.PLANNING

@@ -72,12 +72,25 @@
     .status.err { color: var(--fail); }
     .toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
     select {
+      color-scheme: dark;
       background: var(--bg);
       color: var(--text);
       border: 1px solid var(--line);
       border-radius: 6px;
       padding: 7px 8px;
       min-width: 220px;
+    }
+    select option {
+      background: var(--bg);
+      color: var(--text);
+    }
+    select option:checked {
+      background: #294b78;
+      color: #ffffff;
+    }
+    select:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
     }
     .banner {
       background: #3a1c22;
@@ -130,6 +143,13 @@
       white-space: pre-wrap;
       border-top: 1px solid var(--line);
     }
+    .trace-layout { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr); gap: 16px; }
+    .trace-item { display: block; width: 100%; text-align: left; margin-bottom: 8px; padding: 12px; overflow-wrap: anywhere; }
+    .trace-item[aria-pressed="true"] { border-color: var(--accent); }
+    .trace-item small { display: block; color: var(--muted); margin-top: 4px; }
+    .trace-span { margin: 8px 0; border: 1px solid var(--line); border-radius: 6px; }
+    .trace-span summary { flex-wrap: wrap; overflow-wrap: anywhere; }
+    @media (max-width: 760px) { .trace-layout { grid-template-columns: 1fr; } header { flex-wrap: wrap; } nav { flex-wrap: wrap; } }
     .hidden { display: none; }
   </style>
 </head>
@@ -137,16 +157,36 @@
   <header>
     <h1>MobyAI console</h1>
     <nav>
-      <button id="tab-settings" class="active" type="button">Settings</button>
+      <button id="tab-import" class="active" type="button">New workload</button>
+      <button id="tab-settings" type="button">Settings</button>
       <button id="tab-monitor" type="button">Monitor</button>
+      <button id="tab-traces" type="button">Traces</button>
     </nav>
     <span id="save-status" class="status"></span>
   </header>
   <main>
-    <section id="settings-view">
+    <section id="import-view" class="card">
+      <h2>Start a workload</h2>
+      <p>Import an approved Nautilius optimized_prompt.txt or canonical_prompt.md, or paste your prompt below.</p>
+      <form id="import-form">
+        <label for="workload-name">Project name</label>
+        <input id="workload-name" required maxlength="120" placeholder="SQLite task manager"/>
+        <label for="workload-target">Target directory (optional)</label>
+        <input id="workload-target" placeholder="/home/ojoseph/projects/FlowBPM"/>
+        <p class="hint">Enter an absolute path on the machine running MobyAI, or ~/… . It must be new or empty. Leave blank to create a directory under the configured workspace root.</p>
+        <label for="prompt-file">Import a text or Markdown file (up to 1 MB)</label>
+        <input id="prompt-file" type="file" accept=".txt,.md,text/plain,text/markdown"/>
+        <label for="prompt-text">Full prompt — review and edit before starting</label>
+        <textarea id="prompt-text" required rows="16" style="width:100%;background:var(--bg);color:var(--text);padding:12px;border:1px solid var(--line);font:14px/1.5 monospace"></textarea>
+        <p id="prompt-size" class="status">0 characters</p>
+        <p class="hint">The full text is saved as the project objective. Starting uses the configured models and executes coding tools in a new workspace. Keep this console running. Import size is not a guarantee that the prompt fits your model’s context window.</p>
+        <button id="launch-workload" class="btn primary" type="submit">Create and start</button>
+        <p id="import-message" class="status" role="status"></p>
+      </form>
+    </section>
+    <section id="settings-view" class="hidden">
       <p class="hint">
-        Temperature, top-p, and top-k apply on the next model call. Endpoint and model id
-        update the live OpenAI-compatible client. Save writes <code>*.overlay.yaml</code>
+        Settings apply to newly started workloads. Save changes before importing and starting a prompt. Save writes <code>*.overlay.yaml</code>
         beside the main config (the token never goes here).
       </p>
       <div id="roles" class="roles"></div>
@@ -164,13 +204,49 @@
         <label for="project">Project</label>
         <select id="project"></select>
         <button class="btn" id="refresh" type="button">Refresh</button>
+        <button class="btn" id="resume-workload" type="button" disabled>Resume</button>
+        <button class="btn" id="restart-workload" type="button" disabled>Restart</button>
+        <button class="btn" id="delete-project" type="button" disabled>Delete project</button>
+        <button class="btn" id="stop-workload" type="button" disabled>Stop workload</button>
         <label><input id="auto" type="checkbox" checked/> Auto-refresh 2s</label>
       </div>
+      <div class="toolbar">
+        <label for="project-id">Project ID for confirmations</label>
+        <input id="project-id" readonly style="width:min(100%,420px)" aria-describedby="copy-project-status"/>
+        <button class="btn" id="copy-project-id" type="button" disabled>Copy project ID</button>
+        <span id="copy-project-status" class="status" role="status"></span>
+      </div>
+      <p class="hint">Copy the project ID before deleting; the confirmation requires this ID, not the project name.</p>
+      <p class="hint">Stop applies to workloads launched by this console. It requires confirmation and the project ID, then preserves progress for explicit resume.</p>
+      <div class="card" style="margin-bottom:16px">
+        <p>Current target: <code id="current-target">Select a project</code></p>
+        <label for="monitor-target">New target directory (optional for Restart; required for Change target)</label>
+        <input id="monitor-target" placeholder="/home/ojoseph/projects/FlowBPM-next"/>
+        <div class="row"><button class="btn" id="change-target" type="button" disabled>Change target</button></div>
+        <p class="hint">Resume continues the saved plan in the current target. Restart begins a new run from the same prompt in a fresh directory. Change target copies a stopped project's files and updates its saved path, keeping the original copy. Stop active work first.</p>
+        <p id="workload-action-status" class="status" role="status"></p>
+      </div>
+      <p id="runtime-tracker" class="status" title="Total runtime excludes gaps between runs. Elapsed includes those gaps, frozen when execution stops."></p>
       <p id="monitor-status" class="status" role="status"></p>
+      <pre id="launch-log" class="hidden" aria-label="Workload output"></pre>
       <pre id="project-events" class="hidden"></pre>
       <div id="fail-banner" class="banner hidden"></div>
       <div id="chips" class="chips"></div>
       <div id="steps"></div>
+    </section>
+    <section id="traces-view" class="hidden">
+      <h2>MLflow traces</h2>
+      <p class="hint">Browse recorded operations without starting the separate MLflow viewer. Traces may appear only after the workload finishes or stops; use Monitor for live activity.</p>
+      <div class="toolbar">
+        <label for="trace-filter">Status</label>
+        <select id="trace-filter"><option value="">All statuses</option><option value="ERROR">Errors</option><option value="OK">OK</option><option value="IN_PROGRESS">In progress</option></select>
+        <button id="trace-refresh" class="btn" type="button">Refresh traces</button>
+      </div>
+      <p id="trace-status" class="status" role="status"></p>
+      <div class="trace-layout">
+        <div><div id="trace-list"></div><button id="trace-next" class="btn hidden" type="button">Next 25 traces</button></div>
+        <article class="card"><h2>Trace details</h2><div id="trace-detail">Select a trace to inspect its operations.</div></article>
+      </div>
     </section>
   </main>
   <script>
@@ -180,12 +256,226 @@
     function $(id) { return document.getElementById(id); }
 
     function showTab(name) {
+      $("import-view").classList.toggle("hidden", name !== "import");
+      $("tab-import").classList.toggle("active", name === "import");
       $("settings-view").classList.toggle("hidden", name !== "settings");
       $("monitor-view").classList.toggle("hidden", name !== "monitor");
       $("tab-settings").classList.toggle("active", name === "settings");
       $("tab-monitor").classList.toggle("active", name === "monitor");
+      $("traces-view").classList.toggle("hidden", name !== "traces");
+      $("tab-traces").classList.toggle("active", name === "traces");
+      if (name === "traces" && !tracesLoaded) loadTraces();
       if (name === "monitor") loadMonitor();
     }
+
+    async function apiJson(path, options) {
+      const response = await fetch(path, options);
+      const text = await response.text();
+      let body;
+      try { body = JSON.parse(text); }
+      catch { throw new Error("Console returned HTTP " + response.status + " instead of JSON. Restart the console server and reload this page. Check Monitor before retrying a launch."); }
+      if (!response.ok) throw new Error(body.error || "HTTP " + response.status);
+      return body;
+    }
+
+    let workloadActionBusy = false;
+    let targetProject = null;
+    async function workloadAction(action) {
+      if (workloadActionBusy) return;
+      const projectId = $("project").value;
+      if (!projectId) return;
+      const destination = $("monitor-target").value.trim();
+      if (action === "restart" && !confirm("Restart from the original prompt as a NEW run? The previous run and files are retained. " +
+          (destination ? "New target: " + destination : "A fresh directory will be created under the configured workspace root."))) return;
+      if (action === "target") {
+        if (!destination) { $("workload-action-status").textContent = "Enter a new target directory first."; return; }
+        if (!confirm("Copy this stopped project's files to " + destination + " and use that path for future work? The original copy will be retained.")) return;
+      }
+      workloadActionBusy = true;
+      for (const id of ["resume-workload", "restart-workload", "change-target"]) $(id).disabled = true;
+      $("workload-action-status").textContent = action === "target" ? "Copying files and updating target…" : "Starting workload…";
+      try {
+        const payload = {project_id:projectId};
+        if (action !== "resume") payload.target_directory = destination;
+        if (action === "restart") payload.confirmation = projectId;
+        const result = await apiJson("/api/workloads/" + action, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
+        await loadProjects();
+        $("project").value = result.project_id;
+        $("monitor-target").value = "";
+        $("workload-action-status").textContent = action === "target" ? (result.status === "copying" ? "Copying files to " + result.target_directory + "…" : "Target changed to " + result.workspace_root) :
+          (action === "resume" ? "Resumed " : "Started fresh run ") + result.project_id;
+      } catch (error) { $("workload-action-status").textContent = error.message; }
+      finally { workloadActionBusy = false; await loadMonitor(); }
+    }
+    $("resume-workload").onclick = () => workloadAction("resume");
+    $("restart-workload").onclick = () => workloadAction("restart");
+    $("change-target").onclick = () => workloadAction("target");
+
+    function syncProjectId() {
+      const id = $("project").value;
+      if ($("project-id").value !== id) {
+        $("project-id").value = id;
+        $("copy-project-status").textContent = "";
+      }
+      $("copy-project-id").disabled = !id;
+    }
+    $("copy-project-id").onclick = async () => {
+      syncProjectId();
+      const field = $("project-id");
+      if (!field.value) return;
+      try {
+        await navigator.clipboard.writeText(field.value);
+        $("copy-project-status").textContent = "Copied. Paste this ID into the confirmation.";
+      } catch (error) {
+        field.focus();
+        field.select();
+        $("copy-project-status").textContent = "Press Ctrl+C (or Command+C) to copy the selected ID.";
+      }
+    };
+
+    $("delete-project").onclick = async () => {
+      if (workloadActionBusy) return;
+      const id = $("project").value;
+      if (!id || !confirm("Permanently delete this project's MobyAI records and history? Workspace files, log files, and MLflow traces stay on disk. This cannot be undone in the app.")) return;
+      if (prompt("Paste or type the project ID to confirm deletion: " + id) !== id) return;
+      workloadActionBusy = true;
+      $("delete-project").disabled = true;
+      try {
+        const result = await apiJson("/api/workloads/delete", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({project_id:id,confirmation:id})});
+        $("workload-action-status").textContent = "Deleted project records. Files preserved at " + result.workspace_preserved;
+        $("project").value = "";
+        targetProject = null;
+        await loadProjects();
+      } catch(error) { $("workload-action-status").textContent = error.message; }
+      finally { workloadActionBusy = false; await loadMonitor(); }
+    };
+
+    $("stop-workload").onclick = async () => {
+      const projectId = $("project").value;
+      if (!confirm("Stop this workload? Active commands will be interrupted and progress saved for explicit resume.")) return;
+      const button = $("stop-workload");
+      button.disabled = true;
+      try {
+        const challenge = await apiJson("/api/workloads/prepare-stop", {
+          method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({project_id:projectId})});
+        const confirmation = prompt("Second verification: type the project ID to stop it:\n" + projectId);
+        if (confirmation === null) return;
+        if (confirmation !== projectId) throw new Error("Project ID did not match. Workload continues.");
+        await apiJson("/api/workloads/stop", {method:"POST", headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({project_id:projectId, token:challenge.token, confirmation})});
+        $("monitor-status").textContent = "Stopping workload and saving progress…";
+        await loadMonitor();
+      } catch (error) { $("monitor-status").textContent = error.message; }
+      finally { await loadMonitor(); }
+    };
+
+    $("tab-import").onclick = () => showTab("import");
+    $("prompt-text").oninput = () => {
+      $("prompt-size").textContent = $("prompt-text").value.length.toLocaleString() + " characters";
+    };
+    $("prompt-file").onchange = async () => {
+      const file = $("prompt-file").files[0];
+      if (!file) return;
+      try {
+        if (!/\.(txt|md)$/i.test(file.name)) throw new Error("Export a rendered .txt or .md prompt from Nautilius. Structured JSON/YAML specs are not imported directly.");
+        if (file.size > 1000000) throw new Error("File exceeds the 1 MB limit.");
+        const buffer = await file.arrayBuffer();
+        $("prompt-text").value = new TextDecoder("utf-8", {fatal:true}).decode(buffer);
+        $("prompt-text").oninput();
+        $("import-message").textContent = "Imported " + file.name + ". Review the prompt, then start.";
+      } catch (error) { $("import-message").textContent = error.message; }
+    };
+    $("import-form").onsubmit = async event => {
+      event.preventDefault();
+      const button = $("launch-workload");
+      button.disabled = true;
+      $("import-message").textContent = "Saving prompt and starting workload…";
+      try {
+        const prompt = $("prompt-text").value;
+        if (new TextEncoder().encode(prompt).length > 1000000) throw new Error("Prompt exceeds the 1 MB limit.");
+        const result = await apiJson("/api/projects", {method:"POST", headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({name:$("workload-name").value, prompt, target_directory:$("workload-target").value})});
+        await loadProjects();
+        $("project").value = result.project_id;
+        $("import-message").textContent = "Started " + result.name;
+        showTab("monitor");
+      } catch (error) { $("import-message").textContent = error.message; }
+      finally { button.disabled = false; }
+    };
+
+    let tracesLoaded = false;
+    let tracesLoading = false;
+    let nextTracePage = null;
+    let selectedTrace = null;
+    let detailVersion = 0;
+    const duration = ms => ms == null ? "in progress" : (ms / 1000).toFixed(3) + " s";
+
+    async function loadTraces(page = null) {
+      if (tracesLoading) return;
+      tracesLoading = true;
+      $("trace-refresh").disabled = $("trace-next").disabled = $("trace-filter").disabled = true;
+      $("trace-status").textContent = "Loading traces…";
+      $("trace-status").className = "status";
+      try {
+        const query = "?status=" + encodeURIComponent($("trace-filter").value) + (page ? "&page=" + encodeURIComponent(page) : "");
+        const data = await apiJson("/api/traces" + query);
+        tracesLoaded = true;
+        nextTracePage = data.next_page_token;
+        $("trace-list").innerHTML = (data.traces || []).map(t => `<button class="btn trace-item" type="button" data-trace-id="${esc(t.trace_id)}" aria-pressed="${t.trace_id === selectedTrace}">
+          <strong>${esc(t.name)}</strong> <span>${esc(t.status)}</span>
+          <small>${esc(new Date(t.started_ms).toLocaleString())} · ${esc(duration(t.duration_ms))}</small>
+          <small>${esc(t.trace_id)}</small></button>`).join("");
+        $("trace-next").classList.toggle("hidden", !nextTracePage);
+        $("trace-status").textContent = data.experiment + " — " + (data.traces || []).length + " traces on this page. " +
+          (!(data.traces || []).length ? "No matching traces yet. " : "") +
+          (!data.enabled ? "Tracing is disabled for new workloads; enable tracing in configuration and restart the console." : "Refresh to check for newly recorded traces.");
+      } catch (error) {
+        $("trace-status").textContent = error.message;
+        $("trace-status").className = "status err";
+      } finally {
+        tracesLoading = false;
+        $("trace-refresh").disabled = $("trace-next").disabled = $("trace-filter").disabled = false;
+      }
+    }
+
+    async function loadTraceDetail(id) {
+      const version = ++detailVersion;
+      selectedTrace = id;
+      for (const button of $("trace-list").querySelectorAll("[data-trace-id]")) {
+        button.setAttribute("aria-pressed", String(button.dataset.traceId === id));
+      }
+      $("trace-detail").textContent = "Loading operations…";
+      try {
+        const data = await apiJson("/api/traces/detail?id=" + encodeURIComponent(id));
+        if (version !== detailVersion) return;
+        const spans = data.spans || [];
+        const byId = new Map(spans.map(s => [s.span_id, s]));
+        function depth(span) {
+          const seen = new Set([span.span_id]);
+          let level = 0;
+          while (span.parent_id && byId.has(span.parent_id) && !seen.has(span.parent_id) && level < 8) {
+            span = byId.get(span.parent_id); seen.add(span.span_id); level++;
+          }
+          return level;
+        }
+        $("trace-detail").innerHTML = `<p>${esc(data.trace_id)} · ${esc(data.status)} · ${esc(duration(data.duration_ms))}</p>` +
+          (data.truncated ? "<p class='hint'>Showing the first 1,000 operations. Use the full MLflow viewer for this large trace.</p>" : "") +
+          (!spans.length ? "<p class='hint'>No recorded operations available yet.</p>" : "") +
+          spans.map(s => `<details class="trace-span" style="margin-left:${depth(s) * 10}px" ${s.status === "ERROR" ? "open" : ""}>
+            <summary><strong>${esc(s.name)}</strong><span>${esc(s.status)}</span><span>${esc(duration(s.duration_ms))}</span></summary>
+            <pre>${esc(JSON.stringify(s.attributes, null, 2))}</pre></details>`).join("");
+      } catch (error) {
+        if (version === detailVersion) $("trace-detail").textContent = error.message;
+      }
+    }
+    $("tab-traces").onclick = () => showTab("traces");
+    $("trace-refresh").onclick = () => loadTraces();
+    $("trace-filter").onchange = () => loadTraces();
+    $("trace-next").onclick = () => loadTraces(nextTracePage);
+    $("trace-list").onclick = event => {
+      const button = event.target.closest("[data-trace-id]");
+      if (button) loadTraceDetail(button.dataset.traceId);
+    };
 
     $("tab-settings").onclick = () => showTab("settings");
     $("tab-monitor").onclick = () => showTab("monitor");
@@ -263,9 +553,10 @@
       const select = $("project");
       const current = select.value;
       select.innerHTML = (data.projects || []).map(p =>
-        `<option value="${esc(p.project_id)}">${esc(p.name)} (${esc(p.state)})</option>`
+        `<option value="${esc(p.project_id)}">${esc(p.name)} (${esc(p.state)}) — ${esc(p.project_id)}</option>`
       ).join("");
       if (current && [...select.options].some(o => o.value === current)) select.value = current;
+      syncProjectId();
     }
 
     let monitorLoading = false;
@@ -282,13 +573,22 @@
       }
     }
 
+    function formatRuntime(seconds) {
+      const total = Math.max(0, Math.floor(seconds));
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor(total % 3600 / 60);
+      return hours + "h " + String(minutes).padStart(2, "0") + "m " + String(total % 60).padStart(2, "0") + "s";
+    }
     async function refreshMonitor() {
       await loadProjects();
       const id = $("project").value;
       if (!id) {
+        $("runtime-tracker").textContent = "";
         $("monitor-status").textContent = "No projects in this console database. Use the same --config for ui and run.";
+        for (const id of ["stop-workload", "resume-workload", "restart-workload", "change-target", "delete-project"]) $(id).disabled = true;
+        $("launch-log").classList.add("hidden");
         $("project-events").classList.add("hidden");
-        $("steps").innerHTML = "<p class='hint'>No projects yet. Run mobyai init / run first.</p>";
+        $("steps").innerHTML = "<p class='hint'>No projects yet. Open New workload to import a prompt and start.</p>";
         $("fail-banner").classList.add("hidden");
         $("chips").innerHTML = "";
         return;
@@ -299,10 +599,30 @@
         $("steps").innerHTML = `<p class="hint">${esc(data.error || "Failed to load")}</p>`;
         return;
       }
+      const timing = data.runtime;
+      $("runtime-tracker").textContent = timing?.active_seconds == null ? "Runtime: no saved timing history" :
+        "Total runtime: " + formatRuntime(timing.active_seconds) +
+        " · Elapsed including pauses: " + formatRuntime(timing.elapsed_seconds) +
+        (timing.running ? " · Running" : " · Stopped") + (timing.estimated ? " · Estimated" : "");
       $("monitor-status").className = "status";
       $("monitor-status").textContent = data.project.name + " — " + data.project.state +
         " — " + (data.steps || []).filter(s => s.status === "passed").length + "/" +
         (data.steps || []).length + " steps passed — updated " + new Date().toLocaleTimeString();
+      $("delete-project").disabled = workloadActionBusy || !data.workload?.can_delete;
+      $("resume-workload").disabled = workloadActionBusy || !data.workload?.can_resume;
+      $("restart-workload").disabled = workloadActionBusy || !data.workload?.can_restart;
+      $("change-target").disabled = workloadActionBusy || !data.workload?.can_change_target;
+      $("current-target").textContent = data.project.workspace_root || "Not available";
+      const relocation = data.workload?.relocation;
+      if (relocation) {
+        $("workload-action-status").textContent = relocation.state === "copying" ? "Copying files to " + relocation.target_directory + "…" :
+          relocation.state === "complete" ? "Target changed to " + relocation.target_directory : relocation.error;
+      }
+      if (targetProject !== id) { targetProject = id; $("monitor-target").value = ""; }
+      $("stop-workload").disabled = !data.workload?.can_stop;
+      $("stop-workload").textContent = data.workload?.stopping ? "Stopping…" : "Stop workload";
+      $("launch-log").textContent = data.launch_log || "";
+      $("launch-log").classList.toggle("hidden", !data.launch_log);
       $("project-events").textContent = (data.unscoped_events || []).join("\n");
       $("project-events").classList.toggle("hidden", !(data.unscoped_events || []).length);
       const failed = data.failed || [];
@@ -337,7 +657,7 @@
     }
 
     $("refresh").onclick = loadMonitor;
-    $("project").onchange = loadMonitor;
+    $("project").onchange = () => { syncProjectId(); return loadMonitor(); };
     $("auto").onchange = () => {
       if (timer) clearInterval(timer);
       timer = $("auto").checked ? setInterval(() => {

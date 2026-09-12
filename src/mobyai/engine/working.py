@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from mobyai.tracing import traced
+
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
@@ -72,6 +74,7 @@ class TaskExecutionResult:
         self.tool_outcomes = tool_outcomes
 
 
+@traced("worker.attempt")
 async def execute_task(
     project: Project,
     task_id: str,
@@ -131,6 +134,7 @@ async def execute_task(
     worker_result: WorkerResult | None = None
     outcomes: list[ToolOutcome] = []
     changed_files: list[str] = []
+    references_used: list[str] = []
     inference_error: str | None = None
 
     try:
@@ -153,7 +157,15 @@ async def execute_task(
             except _WORKER_FAILURES as exc:
                 inference_error = str(exc)
                 break
+            _extend_unique(references_used, worker_result.reference_urls_used)
+            worker_result = worker_result.model_copy(update={"reference_urls_used":references_used[:]})
             turn_outcomes = await dispatcher.execute_all(worker_result.tool_calls)
+            for outcome in turn_outcomes:
+                await _record_event(store, project, task.task_id, attempt.attempt_number,
+                    "tool_finished", now or datetime.now(UTC), {"turn": _turn + 1,
+                    "tool": outcome.name.value, "ok": outcome.ok,
+                    "exit_code": outcome.exit_code, "error": outcome.error,
+                    "output_tail": outcome.output[-3000:] if not outcome.ok or outcome.name.value in {"research_search","research_lookup"} else ""})
             outcomes.extend(turn_outcomes)
             _extend_unique(changed_files, _changed_from(turn_outcomes))
             if worker_result.done or not worker_result.tool_calls:
@@ -169,7 +181,7 @@ async def execute_task(
                 ),
             ]
     except (WorkspaceError, ContextBudgetError) as exc:
-        inference_error = inference_error or str(exc)
+        inference_error = inference_error or (("Context budget exhausted: " if isinstance(exc,ContextBudgetError) else "") + str(exc))
 
     task = task.model_copy(update={"status": TaskStatus.TESTING})
     await store.tasks.save(project.project_id, task)

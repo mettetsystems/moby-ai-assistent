@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,6 +17,8 @@ from mobyai.console.settings import (
     serialize_role_settings,
 )
 from mobyai.console.snapshot import build_monitor
+from mobyai.console.workloads import Workloads
+from mobyai.console.traces import TraceBrowser, TraceViewerUnavailable
 from mobyai.runtime import Runtime
 
 UI_PATH = Path(__file__).with_name("ui.html")
@@ -25,6 +29,8 @@ class ConsoleService:
         self.runtime = runtime
         self.config_path = config_path
         self._call = caller
+        self.workloads = Workloads(runtime, config_path)
+        self.traces = TraceBrowser(runtime.config)
 
     def settings(self) -> dict[str, Any]:
         return serialize_role_settings(self.runtime.config)
@@ -56,7 +62,19 @@ class ConsoleService:
         return rows
 
     def monitor(self, project_id: str) -> dict[str, Any]:
-        return self._call(build_monitor(self.runtime, project_id))
+        snapshot = self._call(build_monitor(self.runtime, project_id))
+        snapshot["workload"] = self.workloads.status(project_id, snapshot["project"]["state"])
+        snapshot["launch_log"] = ""
+        if project_id:
+            log = self.workloads.log_path(project_id)
+            try:
+                with log.open("rb") as stream:
+                    stream.seek(0, 2)
+                    stream.seek(max(0, stream.tell() - 65536))
+                    snapshot["launch_log"] = "\n".join(stream.read().decode("utf-8", errors="replace").splitlines()[-100:])
+            except OSError:
+                pass
+        return snapshot
 
 
 def make_handler(service: ConsoleService) -> type[BaseHTTPRequestHandler]:
@@ -75,6 +93,25 @@ def make_handler(service: ConsoleService) -> type[BaseHTTPRequestHandler]:
             if parsed.path == "/api/projects":
                 self._json(200, {"projects": service.projects()})
                 return
+            if parsed.path in {"/api/traces", "/api/traces/detail"}:
+                query = parse_qs(parsed.query)
+                try:
+                    if parsed.path.endswith("/detail"):
+                        result = service.traces.detail((query.get("id") or [""])[0])
+                    else:
+                        result = service.traces.listing((query.get("page") or [None])[0],
+                                                       (query.get("status") or [""])[0])
+                    self._json(200, result)
+                except TraceViewerUnavailable as exc:
+                    self._json(503, {"error": str(exc)})
+                except ValueError as exc:
+                    self._json(400, {"error": str(exc)})
+                except KeyError:
+                    self._json(404, {"error": "Trace not found in the configured experiment"})
+                except Exception as exc:
+                    logging.getLogger(__name__).warning("Trace query failed (%s)", type(exc).__name__)
+                    self._json(503, {"error": "Cannot read MLflow traces. Check the configured tracking backend, then retry."})
+                return
             if parsed.path == "/api/monitor":
                 query = parse_qs(parsed.query)
                 project_id = (query.get("project") or [""])[0].strip()
@@ -87,6 +124,38 @@ def make_handler(service: ConsoleService) -> type[BaseHTTPRequestHandler]:
                     self._json(404, {"error": str(exc)})
                 return
             self._json(404, {"error": "not found"})
+
+        def do_POST(self) -> None:
+            route = urlparse(self.path).path
+            if route not in {"/api/projects", "/api/workloads/prepare-stop", "/api/workloads/stop", "/api/workloads/resume", "/api/workloads/restart", "/api/workloads/target", "/api/workloads/delete"}:
+                self._json(404, {"error": "not found"})
+                return
+            origin = self.headers.get("Origin")
+            if (origin and origin != "http://" + self.headers.get("Host", "")) or self.headers.get("Sec-Fetch-Site") == "cross-site":
+                self._json(403, {"error": "Cross-origin launch denied"})
+                return
+            if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
+                self._json(415, {"error": "Use application/json"})
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 8_000_000:
+                    self._json(413, {"error": "Import request is too large or empty"})
+                    return
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                handler = {"/api/projects": service.workloads.create,
+                           "/api/workloads/prepare-stop": service.workloads.prepare_stop,
+                           "/api/workloads/stop": service.workloads.stop,
+                           "/api/workloads/delete": service.workloads.delete,
+                           "/api/workloads/resume": service.workloads.resume,
+                           "/api/workloads/restart": service.workloads.restart,
+                           "/api/workloads/target": service.workloads.change_target}[route]
+                result = service._call(handler(payload))
+                self._json(201 if route == "/api/projects" else 200, result)
+            except (ValueError, UnicodeError) as exc:
+                self._json(400, {"error": str(exc)})
+            except Exception:
+                self._json(500, {"error": "Could not launch workload. Check console logs and project list before retrying."})
 
         def do_PUT(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)

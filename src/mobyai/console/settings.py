@@ -68,14 +68,17 @@ def apply_role_settings(config: AppConfig, payload: dict[str, Any]) -> None:
 
 def save_settings_overlay(config_path: Path, config: AppConfig) -> Path:
     dest = overlay_path_for(config_path)
-    payload: dict[str, Any] = {"models": {}}
+    payload: dict[str, Any] = yaml.safe_load(dest.read_text(encoding="utf-8")) if dest.is_file() else {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.setdefault("models", {})
     for role in AgentRole:
         model = config.models.for_role(role)
-        payload["models"][role.value] = {
+        payload["models"].setdefault(role.value, {}).update({
             "endpoint": model.endpoint,
             "model": model.model,
             "sampling": model.sampling.model_dump(),
-        }
+        })
     dest.write_text(
         "# Operator overlay written by the MobyAI console. Merged over the main YAML.\n"
         + yaml.safe_dump(payload, sort_keys=False),
@@ -101,5 +104,8 @@ class OverlayWatcher:
         overlay = yaml.safe_load(self.path.read_text(encoding="utf-8")) or {}
         if not isinstance(overlay, dict):
             return
-        apply_role_settings(self.config, overlay)
+        # An overlay can contain only tracing/runtime settings; the role-settings
+        # API still requires models, but the general configuration overlay does not.
+        if "models" in overlay:
+            apply_role_settings(self.config, overlay)
         self._mtime = mtime

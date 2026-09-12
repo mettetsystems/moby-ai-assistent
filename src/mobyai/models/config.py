@@ -52,6 +52,16 @@ class RoleModelConfig(_StrictModel):
     kv_cache_dtype: str | None = None
     inference: InferenceParams | None = None
     sampling: SamplingConfig = Field(default_factory=SamplingConfig)
+    # Targets expand into temperature, top-k, then top-p changes, one per stage.
+    # Explicit presets, not universal coding maxima. Empty disables escalation.
+    recovery_sampling: list[SamplingConfig] = Field(default_factory=lambda: [
+        SamplingConfig(temperature=0.1, top_p=0.70, top_k=5),
+        SamplingConfig(temperature=0.2, top_p=0.75, top_k=8),
+        SamplingConfig(temperature=0.3, top_p=0.80, top_k=11),
+        SamplingConfig(temperature=0.4, top_p=0.85, top_k=14),
+        SamplingConfig(temperature=0.5, top_p=0.90, top_k=17),
+        SamplingConfig(temperature=0.6, top_p=0.95, top_k=20),
+    ], max_length=6)
     launch: list[str] = Field(default_factory=list)
 
 
@@ -95,7 +105,10 @@ class ProjectSettings(_StrictModel):
 
 
 class RuntimeConfig(_StrictModel):
+    keep_awake: bool = True
     max_task_attempts: int = Field(default=2, ge=1)
+    # Legacy YAML compatibility only: project replanning is unlimited.
+    max_replans: int | None = Field(default=None, ge=0)
     command_timeout_seconds: int = Field(default=600, ge=1)
     checkpointing: bool = True
     max_output_bytes: int = Field(default=1_048_576, ge=1024)
@@ -159,7 +172,14 @@ def merge_config_dicts(base: dict[str, Any], overlay: dict[str, Any]) -> dict[st
     return merged
 
 
+class TracingConfig(_StrictModel):
+    enabled: bool = False
+    tracking_uri: str | None = None
+    experiment: str = "MobyAI"
+
+
 class AppConfig(_StrictModel):
+    tracing: TracingConfig = Field(default_factory=TracingConfig)
     project: ProjectSettings
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)

@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class WorkerToolName(StrEnum):
+    RESEARCH_LOOKUP = "research_lookup"
+    RESEARCH_SEARCH = "research_search"
     READ_FILE = "read_file"
     WRITE_FILE = "write_file"
     APPLY_PATCH = "apply_patch"
@@ -28,6 +30,7 @@ class WorkerToolCall(BaseModel):
 
 
 class WorkerResult(BaseModel):
+    reference_urls_used: list[str] = Field(default_factory=list)
     model_config = ConfigDict(extra="forbid")
 
     summary: str = Field(min_length=1)

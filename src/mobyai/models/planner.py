@@ -67,6 +67,8 @@ class DAGPatch(BaseModel):
 
 
 class PlannerInspectToolName(StrEnum):
+    RESEARCH_LOOKUP = "research_lookup"
+    RESEARCH_SEARCH = "research_search"
     """Read-only tools the Planner may request. Writes stay on the Worker path."""
 
     READ_FILE = "read_file"

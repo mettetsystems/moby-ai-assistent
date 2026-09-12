@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from mobyai.tracing import traced
+
 import argparse
 import asyncio
 import re
@@ -603,6 +605,8 @@ async def _cmd_ui(
         await stop.wait()
     finally:
         server.shutdown()
+        server.server_close()
+        await service.workloads.close()
     return 0
 
 
@@ -614,9 +618,6 @@ async def _cmd_run(
     max_steps: int | None,
 ) -> int:
     project = await _require_project(runtime, project_id)
-    if project.state == ProjectState.PAUSED:
-        project = ProjectStateMachine.resume(project)
-        await runtime.store.projects.save(project)
     return await _execute_project(runtime, project, stdout, max_steps=max_steps)
 
 
@@ -637,14 +638,51 @@ async def _cmd_resume(
         f"tasks={len(snapshot.tasks)} attempts={len(snapshot.attempts)}",
         file=stdout,
     )
-    if project.state == ProjectState.PAUSED:
-        project = ProjectStateMachine.resume(project)
-        await runtime.store.projects.save(project)
-        print(f"resumed to {project.state.value}", file=stdout)
     return await _execute_project(runtime, project, stdout, max_steps=max_steps)
 
 
-async def _execute_project(
+@traced("workload")
+async def _execute_project(runtime, project, stdout, *, max_steps):
+    from mobyai.engine.stopping import pause_interrupted
+    from mobyai.engine.power import keep_awake
+    from mobyai.engine.lease import project_lease, ProjectBusyError
+    try:
+        with project_lease(runtime.config.persistence.database_path, project.project_id):
+            project = await _require_project(runtime, project.project_id)
+            if project.state == ProjectState.PAUSED:
+                if (project.last_error or '').startswith('Replan budget exhausted'):
+                    project = project.model_copy(update={'last_error':None})
+                project = ProjectStateMachine.resume(project)
+                await runtime.store.projects.save(project)
+                print(f"resumed to {project.state.value}", file=stdout)
+            track_time = project.state not in {ProjectState.COMPLETED, ProjectState.FAILED}
+            if track_time:
+                await runtime.store.events.append(EventRecord(
+                    timestamp=datetime.now(UTC), project_id=project.project_id,
+                    component="runtime", event="execution_started",
+                ))
+            try:
+                async with keep_awake(enabled=track_time and runtime.config.runtime.keep_awake, stdout=stdout):
+                    return await _execute_project_inner(runtime, project, stdout, max_steps=max_steps)
+            except asyncio.CancelledError:
+                await pause_interrupted(runtime.store, project.project_id)
+                raise
+            except Exception:
+                # Unexpected configuration/tool failures must not strand a project
+                # in an active state after its process has exited.
+                await pause_interrupted(runtime.store, project.project_id)
+                raise
+            finally:
+                if track_time:
+                    await runtime.store.events.append(EventRecord(
+                        timestamp=datetime.now(UTC), project_id=project.project_id,
+                        component="runtime", event="execution_finished",
+                    ))
+    except ProjectBusyError as exc:
+        raise CliError(str(exc)) from exc
+
+
+async def _execute_project_inner(
     runtime: Runtime,
     project: Project,
     stdout: TextIO,
@@ -662,16 +700,22 @@ async def _execute_project(
     workspace = runtime.workspace_for(project)
     current = project
     if current.state in {ProjectState.NEW, ProjectState.PLANNING}:
-        try:
-            current, plan = await plan_project(
-                current,
-                runtime.store,
-                runtime.planner,
-                workspace=workspace,
-                services=runtime.services,
-            )
-        except PlanningError as exc:
-            raise CliError(f"Planning failed: {exc}") from exc
+        planning_round = 0
+        while True:
+            try:
+                current, plan = await plan_project(
+                    current, runtime.store, runtime.planner,
+                    workspace=workspace, services=runtime.services,
+                )
+                break
+            except PlanningError as exc:
+                from mobyai.engine.planner_recovery import recover_planner
+                planning_round += 1
+                print(f"Planning recovery round {planning_round}: {exc}",file=stdout,flush=True)
+                current = await recover_planner(current,runtime.store,exc,ProjectState.PLANNING,planning_round)
+                if current.state == ProjectState.PAUSED:
+                    print(f"{current.project_id} PAUSED: {current.last_error}",file=stdout)
+                    return 0
         print(
             f"planned {current.project_id}: {len(plan.tasks)} task(s) -> {current.state.value}",
             file=stdout,
@@ -684,7 +728,7 @@ async def _execute_project(
     if current.state not in _CONTINUE_STATES:
         raise CliError(f"{current.project_id} is {current.state.value}, cannot run")
 
-    steps = max_steps if max_steps is not None else 50
+    steps = max_steps
     try:
         result = await run_project(
             current,
@@ -698,6 +742,7 @@ async def _execute_project(
             max_turns=runtime.config.runtime.max_worker_turns,
             command_timeout_seconds=runtime.config.runtime.command_timeout_seconds,
             planner=runtime.planner,
+            max_replans=runtime.config.runtime.max_replans,
             services=runtime.services,
             prefer_import_contracts=runtime.config.context.prefer_import_contracts,
         )

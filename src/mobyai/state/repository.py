@@ -69,6 +69,8 @@ class ContractRepository(Protocol):
 
 
 class StateStore(Protocol):
+    async def delete_project(self, project_id: str) -> None: ...
+
     projects: ProjectRepository
     tasks: TaskRepository
     checkpoints: CheckpointRepository

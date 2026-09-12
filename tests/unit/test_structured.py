@@ -81,3 +81,31 @@ async def test_repair_exhaustion() -> None:
         await generator.generate(_request(), PlannerOutput)
     assert exc.value.attempts == 2
     assert len(provider.requests) == 3
+
+
+async def test_schema_recovery_advances_one_coordinate_from_outer_stage():
+    from mobyai.inference.recovery import recovery_stage
+    from mobyai.models.config import RoleModelConfig
+    provider = FakeInferenceProvider(['invalid', 'invalid', json.dumps(VALID_PLANNER)])
+    generator = StructuredGenerator(provider, settings=RoleModelConfig(model='test', endpoint='http://localhost'))
+    with recovery_stage(4):
+        await generator.generate(_request(), PlannerOutput)
+    first, repair, final = provider.requests
+    keys = ('temperature', 'top_k', 'top_p')
+    assert all(getattr(first, key) == getattr(repair, key) for key in keys)
+    assert [key for key in keys if getattr(repair, key) != getattr(final, key)] == ['top_k']
+
+
+async def test_bare_worker_call_repair_supplies_exact_schema():
+    from mobyai.models.worker import WorkerResult
+    bare = {'name': 'write_file', 'arguments': {'path': 'app.py', 'contents': 'x = 1'}}
+    provider = FakeInferenceProvider([json.dumps(bare), json.dumps({
+        'summary': 'Write the implementation', 'tool_calls': [bare], 'done': False,
+    })])
+    generator = StructuredGenerator(provider)
+    result = await generator.generate(_request(), WorkerResult)
+    assert result.tool_calls[0].arguments['path'] == 'app.py'
+    repair = provider.requests[1].messages[-1].content
+    supplied = repair.split('Required JSON schema:\n', 1)[1].split('\n\nReturn ONLY', 1)[0]
+    assert json.loads(supplied) == WorkerResult.model_json_schema()
+    assert not result.done

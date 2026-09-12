@@ -39,6 +39,10 @@ class ReducedLog(BaseModel):
             f"exit_code: {self.exit_code}",
             f"timed_out: {self.timed_out}",
         ]
+        if self.exit_code != 0 or self.timed_out:
+            from mobyai.execution.diagnostics import diagnose
+            diagnosis = diagnose("\n".join((self.stdout_head, self.stdout_tail, self.stderr_head, self.stderr_tail)))
+            lines.extend([f"failure_category: {diagnosis.category}", f"recovery: {diagnosis.instruction}"])
         if self.source_path:
             lines.append(f"full_log: {self.source_path}")
         if self.failed_tests:
