@@ -16,7 +16,7 @@ async def recover_planner(project,store,error,state,round_number):
         'last_error':'Planner recovery: '+str(error),'updated_at':datetime.now(UTC)})
     await store.projects.save(current)
     diagnosis=diagnose(str(error))
-    if not diagnosis.sampling_eligible:
+    if not diagnosis.sampling_eligible and not diagnosis.locally_repairable:
         return await pause_interrupted(store,project.project_id)
     delay=min(30,2**min(round_number,5))
     await store.events.append(EventRecord(timestamp=datetime.now(UTC),project_id=project.project_id,

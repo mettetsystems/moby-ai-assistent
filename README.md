@@ -209,7 +209,13 @@ Resume with the separate **Resume** button or `./scripts/start.sh run <project_i
 Errors now include categories and repair instructions. For example, npm's
 `Missing script: "test:bpm"` requires checking `package.json`, the working directory,
 and actual tests; renaming the task or adding a no-op script is not a repair.
-Network, permission, toolchain, and capacity failures pause for operator intervention.
+Network, permission, system-toolchain, and capacity failures pause for operator intervention.
+Recognized missing Node development tools (such as Jest) instead enter local dependency
+repair without sampling escalation. Agents are guided to inspect the manifest and
+lockfile, install declared development dependencies, and use equivalent package test
+scripts. Saved bare test commands can resolve installed `node_modules/.bin` tools
+in the working directory or its ancestors within the workspace; no automatic
+download or global installation is performed by this lookup.
 Transient inference transport errors and HTTP 429/502/503/504 receive at most two
 retries with bounded backoff and unchanged sampling; authentication/bad-request
 responses are not retried. Tool outcomes appear in Monitor as they complete.

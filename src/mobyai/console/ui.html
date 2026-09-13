@@ -109,9 +109,7 @@
       border: 1px solid var(--line);
       color: var(--muted);
     }
-    .chip.failed { border-color: var(--fail); color: var(--fail); }
-    .chip.passed { border-color: var(--ok); color: var(--ok); }
-    .chip.running { border-color: var(--warn); color: var(--warn); }
+
     details.step {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -119,7 +117,7 @@
       margin-bottom: 10px;
       overflow: hidden;
     }
-    details.step.failed { border-color: var(--fail); }
+
     summary {
       cursor: pointer;
       padding: 10px 12px;
@@ -130,8 +128,36 @@
     }
     summary::-webkit-details-marker { display: none; }
     .badge { font-size: 11px; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; background: var(--panel-2); }
-    .badge.failed { background: #4a1d24; color: var(--fail); }
-    .badge.passed { background: #16362d; color: var(--ok); }
+    /* Current state owns the color; historical failures remain in the logs. */
+    [class*="state-"] { --state-border: #606c7b; --state-bg: #2f333a; }
+    .state-passed, .state-completed { --state-border: #489363; --state-bg: #1f3128; }
+    .state-failed { --state-border: #9d3e4a; --state-bg: #3f2a2f; }
+    .state-paused, .state-suspended { --state-border: #9e8f3d; --state-bg: #342f1c; }
+    .state-pending { --state-border: #606c7b; --state-bg: #2f333a; }
+    .state-ready { --state-border: #40919b; --state-bg: #203338; }
+    .state-running { --state-border: #3e6b9d; --state-bg: #2d3849; }
+    .state-testing { --state-border: #523f9c; --state-bg: #3a334a; }
+    .state-blocked { --state-border: #9e6f3e; --state-bg: #3b2e25; }
+    .state-superseded { --state-border: #8e409c; --state-bg: #3d2f41; }
+    .state-new { --state-border: #5e6b7d; --state-bg: #3c434c; }
+    .state-planning { --state-border: #3f4f9c; --state-bg: #36374a; }
+    .state-plan_ready { --state-border: #449787; --state-bg: #243836; }
+    .state-dispatching { --state-border: #3f7e9d; --state-bg: #273944; }
+    .state-working { --state-border: #3f699c; --state-bg: #273140; }
+    .state-validating { --state-border: #6c3e9e; --state-bg: #403249; }
+    .state-retrying { --state-border: #994371; --state-bg: #402f39; }
+    .state-escalating { --state-border: #9d553f; --state-bg: #3e2f2a; }
+    .state-replanning { --state-border: #8a6c51; --state-bg: #3b322d; }
+    .chip[class*="state-"], .badge[class*="state-"] {
+      background: var(--state-bg);
+      color: #ffffff;
+      border: 1px solid var(--state-border);
+      font-weight: 600;
+    }
+    details.step[class*="state-"] { border-color: #ffffff; border-left-width: 4px; }
+    details.step[class*="state-"] > summary { background: var(--state-bg); }
+    #monitor-view, #monitor-view * { color: #ffffff; }
+
     pre {
       margin: 0;
       padding: 12px;
@@ -216,7 +242,17 @@
         <button class="btn" id="copy-project-id" type="button" disabled>Copy project ID</button>
         <span id="copy-project-status" class="status" role="status"></span>
       </div>
-      <p class="hint">Copy the project ID before deleting; the confirmation requires this ID, not the project name.</p>
+      <div id="delete-confirmation" class="card hidden" style="margin-bottom:16px" aria-labelledby="delete-heading">
+        <h2 id="delete-heading">Confirm project deletion</h2>
+        <p>Permanently delete records and history for <code id="delete-project-label"></code>? This cannot be undone in the app. Workspace files, logs, and MLflow traces stay on disk.</p>
+        <label for="delete-project-input">Paste or type the exact project ID above</label>
+        <input id="delete-project-input" autocomplete="off" spellcheck="false"/>
+        <div class="row">
+          <button class="btn" id="confirm-delete-project" type="button" disabled>Permanently delete project</button>
+          <button class="btn" id="cancel-delete-project" type="button">Cancel</button>
+        </div>
+        <p id="delete-status" class="status" role="status"></p>
+      </div>
       <p class="hint">Stop applies to workloads launched by this console. It requires confirmation and the project ID, then preserves progress for explicit resume.</p>
       <div class="card" style="margin-bottom:16px">
         <p>Current target: <code id="current-target">Select a project</code></p>
@@ -227,6 +263,7 @@
         <p id="workload-action-status" class="status" role="status"></p>
       </div>
       <p id="runtime-tracker" class="status" title="Total runtime excludes gaps between runs. Elapsed includes those gaps, frozen when execution stops."></p>
+      <span id="project-state" class="badge hidden"></span>
       <p id="monitor-status" class="status" role="status"></p>
       <pre id="launch-log" class="hidden" aria-label="Workload output"></pre>
       <pre id="project-events" class="hidden"></pre>
@@ -333,21 +370,61 @@
       }
     };
 
-    $("delete-project").onclick = async () => {
-      if (workloadActionBusy) return;
+    let pendingDelete = null;
+    let monitorRevision = 0;
+    function closeDelete() {
+      pendingDelete = null;
+      monitorRevision++;
+      $("delete-confirmation").classList.add("hidden");
+      $("project").disabled = false;
+      $("delete-project-input").value = "";
+    }
+    $("delete-project").onclick = () => {
+      if (workloadActionBusy || pendingDelete) return;
       const id = $("project").value;
-      if (!id || !confirm("Permanently delete this project's MobyAI records and history? Workspace files, log files, and MLflow traces stay on disk. This cannot be undone in the app.")) return;
-      if (prompt("Paste or type the project ID to confirm deletion: " + id) !== id) return;
+      if (!id) return;
+      pendingDelete = id;
+      monitorRevision++;
+      $("project").disabled = true;
+      $("delete-project-label").textContent = id;
+      $("delete-project-input").value = "";
+      $("delete-status").textContent = "";
+      $("confirm-delete-project").disabled = true;
+      $("delete-confirmation").classList.remove("hidden");
+      for (const name of ["delete-project", "resume-workload", "restart-workload", "change-target", "stop-workload"]) $(name).disabled = true;
+      $("delete-project-input").focus();
+    };
+    $("delete-project-input").oninput = () => {
+      $("confirm-delete-project").disabled = workloadActionBusy || !pendingDelete || $("delete-project-input").value !== pendingDelete;
+    };
+    $("cancel-delete-project").onclick = async () => {
+      if (workloadActionBusy) return;
+      closeDelete();
+      await loadMonitor();
+    };
+    $("confirm-delete-project").onclick = async () => {
+      const id = pendingDelete;
+      if (workloadActionBusy || !id || $("delete-project-input").value !== id) return;
       workloadActionBusy = true;
-      $("delete-project").disabled = true;
+      $("confirm-delete-project").disabled = true;
+      $("cancel-delete-project").disabled = true;
+      $("delete-project-input").disabled = true;
+      $("delete-status").textContent = "Deleting project records…";
       try {
         const result = await apiJson("/api/workloads/delete", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({project_id:id,confirmation:id})});
         $("workload-action-status").textContent = "Deleted project records. Files preserved at " + result.workspace_preserved;
         $("project").value = "";
         targetProject = null;
-        await loadProjects();
-      } catch(error) { $("workload-action-status").textContent = error.message; }
-      finally { workloadActionBusy = false; await loadMonitor(); }
+        closeDelete();
+      } catch(error) {
+        $("delete-status").textContent = "Deletion could not be confirmed: " + error.message;
+      } finally {
+        workloadActionBusy = false;
+        $("cancel-delete-project").disabled = false;
+        $("delete-project-input").disabled = false;
+        $("delete-project-input").oninput();
+        if (!pendingDelete) await loadMonitor();
+      }
     };
 
     $("stop-workload").onclick = async () => {
@@ -547,9 +624,11 @@
     };
 
     async function loadProjects() {
+      const revision = monitorRevision;
       const res = await fetch("/api/projects");
       if (!res.ok) throw new Error("Project list request failed (" + res.status + ")");
       const data = await res.json();
+      if (revision !== monitorRevision || pendingDelete) return;
       const select = $("project");
       const current = select.value;
       select.innerHTML = (data.projects || []).map(p =>
@@ -561,7 +640,7 @@
 
     let monitorLoading = false;
     async function loadMonitor() {
-      if (monitorLoading) return;
+      if (monitorLoading || pendingDelete || workloadActionBusy) return;
       monitorLoading = true;
       try {
         await refreshMonitor();
@@ -573,6 +652,15 @@
       }
     }
 
+    function statusClass(status) {
+      const name = String(status || "").toLowerCase();
+      const known = new Set(["passed", "completed", "failed", "paused", "suspended",
+        "pending", "ready", "running", "testing", "blocked", "superseded", "new",
+        "planning", "plan_ready", "dispatching", "working", "validating", "retrying",
+        "escalating", "replanning"]);
+      return "state-" + (known.has(name) ? name : "unknown");
+    }
+
     function formatRuntime(seconds) {
       const total = Math.max(0, Math.floor(seconds));
       const hours = Math.floor(total / 3600);
@@ -580,9 +668,17 @@
       return hours + "h " + String(minutes).padStart(2, "0") + "m " + String(total % 60).padStart(2, "0") + "s";
     }
     async function refreshMonitor() {
+      if (pendingDelete || workloadActionBusy) return;
+      const revision = monitorRevision;
       await loadProjects();
+      if (revision !== monitorRevision || pendingDelete) return;
       const id = $("project").value;
       if (!id) {
+        $("project-state").className = "badge hidden";
+        $("project-state").textContent = "";
+        $("current-target").textContent = "Select a project";
+        $("monitor-target").value = "";
+        targetProject = null;
         $("runtime-tracker").textContent = "";
         $("monitor-status").textContent = "No projects in this console database. Use the same --config for ui and run.";
         for (const id of ["stop-workload", "resume-workload", "restart-workload", "change-target", "delete-project"]) $(id).disabled = true;
@@ -595,10 +691,13 @@
       }
       const res = await fetch("/api/monitor?project=" + encodeURIComponent(id));
       const data = await res.json();
+      if (revision !== monitorRevision || pendingDelete || id !== $("project").value) return;
       if (!res.ok) {
         $("steps").innerHTML = `<p class="hint">${esc(data.error || "Failed to load")}</p>`;
         return;
       }
+      $("project-state").className = "badge " + statusClass(data.project.state);
+      $("project-state").textContent = data.project.state;
       const timing = data.runtime;
       $("runtime-tracker").textContent = timing?.active_seconds == null ? "Runtime: no saved timing history" :
         "Total runtime: " + formatRuntime(timing.active_seconds) +
@@ -636,17 +735,17 @@
         banner.classList.add("hidden");
       }
       $("chips").innerHTML = (data.steps || []).map(step => {
-        const kind = step.failed ? "failed" : (step.status === "passed" ? "passed" : (step.status === "running" || step.status === "testing" ? "running" : ""));
+        const kind = statusClass(step.status);
         return `<span class="chip ${kind}">${esc(step.task_id)} ${esc(step.status)}</span>`;
       }).join("");
       const expanded = new Set([...document.querySelectorAll("details.step[open]")].map(el => el.dataset.task));
       $("steps").innerHTML = (data.steps || []).map(step => {
         const open = step.failed || expanded.has(step.task_id) ? " open" : "";
         const body = step.failed ? (step.workflow || step.log_tail || "(no trace)") : (step.log_tail || "(no log yet)");
-        const cls = step.failed ? "step failed" : "step";
+        const cls = "step " + statusClass(step.status);
         return `<details data-task="${esc(step.task_id)}" class="${cls}"${open}>
           <summary>
-            <span class="badge ${step.failed ? "failed" : (step.status === "passed" ? "passed" : "")}">${esc(step.status)}</span>
+            <span class="badge ${statusClass(step.status)}">${esc(step.status)}</span>
             <strong>${esc(step.task_id)}</strong>
             <span>${esc(step.name)}</span>
             <span class="hint">attempts=${esc(step.attempt_count)}</span>

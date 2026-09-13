@@ -485,3 +485,11 @@ Design record for major subsystems. Each section covers what it does, why it exi
 
 
 
+## Post-run follow-up — missing Jest executable (2026-09-12)
+
+- **Observed:** FlowBPM (`import-bde35413803d`), STEP_001, attempt 1: `jest tests/theme/test_theme_engine.js` exited 127. The log reports `Executable not found: jest`; tests did not run. Evidence: `/home/ojoseph/FlowBPM/artifacts/logs/STEP_001/attempt_001.log`.
+- **At inspection:** `/home/ojoseph/FlowBPM/package.json` declares Jest as a dev dependency and provides `test:theme`, but `node_modules/.bin/jest` is missing.
+- **After the run:** Review dependency installation and test-command selection. Install development dependencies using the project's package manager and lockfile (`npm ci` with a valid lockfile, otherwise `npm install`), then validate with `npm run test:theme` from the project root rather than bare `jest`.
+- **Harness improvement to evaluate:** Detect missing test tools before validation, distinguish toolchain failures from failed assertions, and guide agents toward declared package scripts. A missing executable needs dependency/path recovery rather than sampling escalation. Preserve test scope and assertions when correcting the command.
+- **Resolved (2026-09-12):** Installed declared development dependencies and generated the npm lockfile. All 21 theme tests passed, including the unchanged saved command through the harness; STEP_001 is PASSED and the stale project error is cleared. FlowBPM remains PAUSED/READY for explicit resume. The database was backed up under the workspace `.agent/repairs/` before validation.
+- **Prevention implemented:** The command runner resolves installed project-local binaries (including nested working directories). Recognized missing Node tools enter local dependency repair without sampling escalation; genuine runtime/access/capacity failures retain their pause behavior. Planner, replanner, Worker, and Orchestrator prompts now require dependency/lockfile inspection and equivalent package-script validation. Prompt guidance improves prevention but cannot guarantee model compliance.

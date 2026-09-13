@@ -9,7 +9,7 @@ function page() {
   const calls = [];
   const element = id => {
     if (!elements.has(id)) elements.set(id, {value: id === 'project' ? 'demo' : '', checked:false,
-      options:[], classList:{toggle(){}, add(){}, contains(){return false;}}, innerHTML:'', textContent:''});
+      options:[], focus(){}, classList:{toggle(){}, add(){}, remove(){}, contains(){return false;}}, innerHTML:'', textContent:''});
     return elements.get(id);
   };
   const context = vm.createContext({document:{getElementById:element, querySelectorAll:()=>[]}, TextEncoder, TextDecoder,
@@ -108,12 +108,72 @@ test('runtime display totals hours beyond a day and distinguishes elapsed pauses
   assert.match(p.element('runtime-tracker').textContent,/Stopped · Estimated/);
 });
 
-test('delete requires confirmation and an exact project ID',async()=>{
-  const p=page();p.context.confirm=()=>true;p.context.prompt=()=>'wrong';
-  await p.element('delete-project').onclick();
+test('delete uses inline confirmation and requires an exact project ID',async()=>{
+  const p=page();
+  p.context.confirm=p.context.prompt=()=>{throw new Error('Native dialogs must not be used');};
+  p.element('delete-project').onclick();
+  p.element('delete-project-input').value='wrong';
+  await p.element('confirm-delete-project').onclick();
   assert.equal(p.calls.filter(([url])=>url==='/api/workloads/delete').length,0);
-  p.context.prompt=()=>'demo';
-  await p.element('delete-project').onclick();
+  p.element('delete-project-input').value='demo';
+  await p.element('confirm-delete-project').onclick();
   const call=p.calls.find(([url])=>url==='/api/workloads/delete');
   assert.deepEqual(JSON.parse(call[1].body),{project_id:'demo',confirmation:'demo'});
+});
+test('delete cancellation preserves project and polling waits during confirmation',async()=>{
+  const p=page();
+  p.element('delete-project').onclick();
+  const count=p.calls.length;
+  await vm.runInContext('loadMonitor()',p.context);
+  assert.equal(p.calls.length,count);
+  await p.element('cancel-delete-project').onclick();
+  assert.equal(p.calls.filter(([url])=>url==='/api/workloads/delete').length,0);
+  assert.equal(p.element('project').disabled,false);
+});
+test('delete failure stays inline and releases controls for retry or cancellation',async()=>{
+  const p=page();
+  p.element('delete-project').onclick();
+  p.element('delete-project-input').value='demo';
+  p.context.fetch=async()=>{throw new Error('Connection lost');};
+  await p.element('confirm-delete-project').onclick();
+  assert.match(p.element('delete-status').textContent,/Connection lost/);
+  assert.equal(p.element('cancel-delete-project').disabled,false);
+  assert.equal(p.element('confirm-delete-project').disabled,false);
+});
+test('monitor response started before deletion cannot overwrite confirmation state',async()=>{
+  const p=page();
+  const original=p.context.fetch;
+  let release;
+  let reached;
+  const started=new Promise(resolve=>{reached=resolve;});
+  p.context.fetch=async(url,options)=>{
+    if (!url.startsWith('/api/monitor')) return original(url,options);
+    reached();
+    return new Promise(resolve=>{release=()=>resolve({ok:true,json:async()=>({project:{name:'Stale',state:'PAUSED'},workload:{can_delete:true},steps:[]})});});
+  };
+  const refresh=vm.runInContext('loadMonitor()',p.context);
+  await started;
+  p.element('delete-project').onclick();
+  release();
+  await refresh;
+  assert.equal(p.element('delete-project').disabled,true);
+  assert.equal(p.element('delete-project-label').textContent,'demo');
+  assert.ok(!p.element('monitor-status').textContent.includes('Stale'));
+});
+test('monitor colors current status even when a passed task has failure history',async()=>{
+  const p=page();
+  const original=p.context.fetch;
+  p.context.fetch=async(url,options)=>url.startsWith('/api/monitor') ? {
+    ok:true,json:async()=>({project:{name:'Demo',state:'PAUSED'},steps:[
+      {task_id:'PASS',name:'Recovered',status:'passed',failed:true,attempt_count:2},
+      {task_id:'FAIL',name:'Failed',status:'failed',failed:true,attempt_count:1},
+      {task_id:'TEST',name:'Testing',status:'testing',failed:false,attempt_count:1}
+    ],failed:[]})
+  } : original(url,options);
+  await vm.runInContext('refreshMonitor()',p.context);
+  assert.equal(p.element('project-state').className,'badge state-paused');
+  assert.match(p.element('chips').innerHTML,/chip state-passed.*PASS passed/);
+  assert.match(p.element('steps').innerHTML,/data-task="PASS" class="step state-passed"/);
+  assert.match(p.element('steps').innerHTML,/badge state-testing/);
+  assert.match(p.element('steps').innerHTML,/badge state-failed/);
 });

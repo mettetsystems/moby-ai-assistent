@@ -7,6 +7,7 @@ from mobyai.tracing import traced
 import asyncio
 import os
 import signal
+import shutil
 import time
 from pathlib import Path
 
@@ -84,13 +85,28 @@ class CommandRunner:
         if not self.workspace.contains(workdir):
             raise PathEscapeError(f"cwd escapes workspace: {cwd}")
 
+        # Match npm's local-tool lookup for saved bare test commands, including
+        # commands launched in a nested project directory. Never leave the workspace.
+        executable = command[0]
+        if "/" not in executable:
+            directory = workdir
+            while self.workspace.contains(directory):
+                if (directory / "package.json").is_file():
+                    local = shutil.which(executable, path=str(directory / "node_modules" / ".bin"))
+                    if local:
+                        executable = local
+                        break
+                if directory == self.workspace.root or directory.parent == directory:
+                    break
+                directory = directory.parent
+
         stdout_buf = _BoundedBuffer(self.max_output_bytes)
         stderr_buf = _BoundedBuffer(self.max_output_bytes)
         started = time.monotonic()
         timed_out = False
         try:
             process = await asyncio.create_subprocess_exec(
-                *command,
+                executable, *command[1:],
                 cwd=str(workdir),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

@@ -1,5 +1,6 @@
 """Classify observed failures without pretending sampling can repair the environment."""
 from dataclasses import dataclass
+import re
 
 
 @dataclass(frozen=True)
@@ -7,6 +8,7 @@ class FailureDiagnosis:
     category: str
     instruction: str
     sampling_eligible: bool = True
+    locally_repairable: bool = False
 
 
 def diagnose(text: str) -> FailureDiagnosis:
@@ -21,6 +23,9 @@ def diagnose(text: str) -> FailureDiagnosis:
         return FailureDiagnosis("network", "Check registry/endpoint reachability and proxy configuration. A network failure is not evidence of a code defect. Preserve the error and pause for environment repair if connectivity cannot be restored.", False)
     if any(x in lower for x in ('eacces', 'eperm', 'e401', 'e403', 'permission denied', 'unauthorized')):
         return FailureDiagnosis("access", "Check the failing path or registry credential configuration. Do not use sudo, alter credentials, or relax permissions automatically; request operator intervention.", False)
+    node_tool = r"(?:jest|vitest|mocha|eslint|tsc|webpack|vite)"
+    if re.search(r"executable not found:\s*" + node_tool + r"(?=[.\s]|$)|(?:^|[\s/])" + node_tool + r":\s*(?:command )?not found", lower):
+        return FailureDiagnosis("npm_missing_executable", "Inspect package.json, package-manager/lockfile and the failing working directory. Install declared development dependencies with the matching package manager (npm ci --include=dev with a valid lockfile, otherwise npm install --include=dev). Use the existing equivalent npm test script or installed project-local executable; preserve test scope and assertions. Do not install globally or use npx to download an undeclared tool. Rerun the exact validation and report actual results.", False, True)
     if any(x in lower for x in ('command not found', 'executable not found', 'ebadengine')):
         return FailureDiagnosis("toolchain", "Verify the required executable and supported runtime version. Report the missing toolchain instead of repeatedly rewriting application code.", False)
     if any(x in lower for x in ('out of memory', 'context length', 'context window')):

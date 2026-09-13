@@ -359,7 +359,7 @@ async def resolve_validation_failure(
             "decision_summary": decision.decision_summary + "\n" + diagnosis.instruction})
     await _record_event(store, project, task.task_id, task.attempt_count,
         "failure_diagnosed", timestamp, {"category": diagnosis.category, "instruction": diagnosis.instruction})
-    if not diagnosis.sampling_eligible:
+    if not diagnosis.sampling_eligible and not diagnosis.locally_repairable:
         from mobyai.engine.stopping import pause_interrupted
         paused = await pause_interrupted(store, project.project_id)
         return OrchestrationStep(project=paused, decision=OrchestratorDecision.BLOCKED, execution=execution)
