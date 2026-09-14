@@ -195,17 +195,19 @@
       <h2>Start a workload</h2>
       <p>Import an approved Nautilius optimized_prompt.txt or canonical_prompt.md, or paste your prompt below.</p>
       <form id="import-form">
+        <label for="workload-mode">Workflow</label>
+        <select id="workload-mode"><option value="greenfield">Build a new application</option><option value="existing">Review and improve an existing codebase</option></select>
         <label for="workload-name">Project name</label>
         <input id="workload-name" required maxlength="120" placeholder="SQLite task manager"/>
-        <label for="workload-target">Target directory (optional)</label>
+        <label id="target-label" for="workload-target">Target directory (optional)</label>
         <input id="workload-target" placeholder="/home/ojoseph/projects/FlowBPM"/>
-        <p class="hint">Enter an absolute path on the machine running MobyAI, or ~/… . It must be new or empty. Leave blank to create a directory under the configured workspace root.</p>
+        <p id="target-help" class="hint">Enter an absolute path or ~/… . It must be new or empty. Leave blank to use the configured workspace root.</p>
         <label for="prompt-file">Import a text or Markdown file (up to 1 MB)</label>
         <input id="prompt-file" type="file" accept=".txt,.md,text/plain,text/markdown"/>
         <label for="prompt-text">Full prompt — review and edit before starting</label>
         <textarea id="prompt-text" required rows="16" style="width:100%;background:var(--bg);color:var(--text);padding:12px;border:1px solid var(--line);font:14px/1.5 monospace"></textarea>
         <p id="prompt-size" class="status">0 characters</p>
-        <p class="hint">The full text is saved as the project objective. Starting uses the configured models and executes coding tools in a new workspace. Keep this console running. Import size is not a guarantee that the prompt fits your model’s context window.</p>
+        <p id="launch-help" class="hint">The full text is saved as the project objective. Starting uses the configured models and executes coding tools in a new workspace. Keep this console running. Import size is not a guarantee that the prompt fits your model’s context window.</p>
         <button id="launch-workload" class="btn primary" type="submit">Create and start</button>
         <p id="import-message" class="status" role="status"></p>
       </form>
@@ -254,6 +256,20 @@
         <p id="delete-status" class="status" role="status"></p>
       </div>
       <p class="hint">Stop applies to workloads launched by this console. It requires confirmation and the project ID, then preserves progress for explicit resume.</p>
+      <div class="card" style="margin-bottom:16px">
+        <h2>Codebase review and planning history</h2>
+        <button class="btn" id="generate-logic-report" type="button" disabled>Generate logic report</button>
+        <p id="review-status" class="status" role="status"></p>
+        <details id="review-report-panel" class="hidden"><summary>Read report</summary><pre id="review-report"></pre></details>
+        <div id="plan-approval-panel" class="hidden">
+          <h3>Review the proposed plan</h3>
+          <p>The codebase has not been changed by this review, apart from files in mobyMinutes. Check the tasks, validation commands, and report influence before approving.</p>
+          <pre id="proposed-plan"></pre>
+          <label><input id="plan-reviewed" type="checkbox" style="width:auto"/> I reviewed this plan and authorize these changes.</label>
+          <button class="btn primary" id="approve-plan" type="button" disabled>Approve plan and start</button>
+          <p>Leave this unchecked to keep the project paused. To change scope, submit a fresh existing-codebase review with an updated prompt.</p>
+        </div>
+      </div>
       <div class="card" style="margin-bottom:16px">
         <p>Current target: <code id="current-target">Select a project</code></p>
         <label for="monitor-target">New target directory (optional for Restart; required for Change target)</label>
@@ -462,16 +478,92 @@
         $("import-message").textContent = "Imported " + file.name + ". Review the prompt, then start.";
       } catch (error) { $("import-message").textContent = error.message; }
     };
+    $("workload-mode").onchange = () => {
+      const existing = $("workload-mode").value === "existing";
+      $("workload-target").required = existing;
+      $("target-label").textContent = existing ? "Existing codebase directory (required)" : "Target directory (optional)";
+      $("launch-help").textContent = existing ? "The prompt describes your requested improvements. Review reads source and writes only mobyMinutes. Implementation starts after you approve the proposed plan in Monitor." : "The full prompt is saved as the objective. Starting executes coding tools in a new workspace. Keep the console running. Import size does not guarantee the prompt fits the model context.";
+      $("target-help").textContent = existing ? "Choose an existing local codebase. Native planning history or code archaeology will inform a proposed plan. Implementation waits for your approval in Monitor." : "Enter a new or empty directory, or leave blank to use the configured workspace root.";
+      $("launch-workload").textContent = existing ? "Review codebase and propose plan" : "Create and start";
+    };
+    let reviewRevision = null;
+    let reviewProject = null;
+    $("plan-reviewed").onchange = () => {
+      $("approve-plan").disabled = workloadActionBusy || !reviewRevision || !$("plan-reviewed").checked;
+    };
+    $("approve-plan").onclick = async () => {
+      if (workloadActionBusy || !reviewRevision || !$("plan-reviewed").checked || reviewProject !== $("project").value) return;
+      workloadActionBusy = true;
+      $("approve-plan").disabled = true;
+      try {
+        await apiJson("/api/workloads/approve-plan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({project_id:reviewProject,revision:reviewRevision})});
+        $("review-status").textContent = "Plan approved. Starting implementation…";
+        reviewRevision = null;
+      } catch(error) { $("review-status").textContent = error.message; }
+      finally { workloadActionBusy=false; await loadMonitor(); }
+    };
+    $("generate-logic-report").onclick = async () => {
+      if (workloadActionBusy || pendingDelete || !$("project").value) return;
+      workloadActionBusy=true;
+      try {
+        const result=await apiJson("/api/workloads/report",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({project_id:$("project").value})});
+        $("review-status").textContent=result.message;
+      } catch(error) { $("review-status").textContent=error.message; }
+      finally { workloadActionBusy=false; await loadMonitor(); }
+    };
+    function formatProposal(plan) {
+      const lines=[plan.project_name || "Proposed plan", "", plan.architecture_summary || "", "", "HOW THE REPORT INFLUENCED THIS PLAN"];
+      lines.push(...(plan.review_influence || []).map(note=>"• "+note));
+      for (const task of plan.tasks || []) {
+        lines.push("",task.task_id+" — "+task.name,task.description,
+          "Files: "+(task.target_files || []).join(", "),
+          "Depends on: "+((task.dependencies || []).join(", ") || "None"),
+          "Acceptance checks:",...(task.acceptance_criteria || []).map(item=>"• "+item),
+          "Validation commands:",...(task.test_commands || []).map(command=>"  "+command));
+      }
+      return lines.join("\n");
+    }
+    function formatReviewReport(report) {
+      const lines=[];
+      for (const section of report.reports || [report]) {
+        if (section.plan_id) lines.push("PLAN "+section.plan_id);
+        lines.push(section.summary || "");
+        for (const finding of section.findings || []) lines.push((finding.concern ? "CONCERN: " : "• ")+finding.claim,
+          "Evidence: "+((finding.evidence || []).join(", ") || "Unverified"));
+        lines.push(...(section.recommendations || []).map(text=>"Recommendation: "+text));
+        lines.push(...(section.limitations || []).map(text=>"Limitation: "+text), "");
+      }
+      if (report.reports) lines.push(...(report.limitations || []).map(text=>"Limitation: "+text));
+      return lines.join("\n");
+    }
+    function renderReview(data,id) {
+      const review=data.review || {};
+      if (review.job_status) $("review-status").textContent=review.job_status;
+      const proposal=review.proposal;
+      const revision=proposal && !proposal.approved ? proposal.revision : null;
+      if (reviewProject !== id || reviewRevision !== revision) $("plan-reviewed").checked=false;
+      reviewProject=id;
+      reviewRevision=revision;
+      $("plan-approval-panel").classList.toggle("hidden",!revision);
+      $("proposed-plan").textContent=proposal ? formatProposal(proposal.plan) : "";
+      const report=review.logic_report || review.functionality_report;
+      $("review-report-panel").classList.toggle("hidden",!report);
+      $("review-report").textContent=report ? formatReviewReport(report) : "";
+      $("generate-logic-report").disabled=!id || workloadActionBusy;
+      $("plan-reviewed").onchange();
+      if (revision) $("resume-workload").disabled=true;
+    }
+
     $("import-form").onsubmit = async event => {
       event.preventDefault();
       const button = $("launch-workload");
       button.disabled = true;
-      $("import-message").textContent = "Saving prompt and starting workload…";
+      $("import-message").textContent = $("workload-mode").value === "existing" ? "Saving prompt and starting codebase review…" : "Saving prompt and starting workload…";
       try {
         const prompt = $("prompt-text").value;
         if (new TextEncoder().encode(prompt).length > 1000000) throw new Error("Prompt exceeds the 1 MB limit.");
         const result = await apiJson("/api/projects", {method:"POST", headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({name:$("workload-name").value, prompt, target_directory:$("workload-target").value})});
+          body:JSON.stringify({workflow:$("workload-mode").value || "greenfield", name:$("workload-name").value, prompt, target_directory:$("workload-target").value})});
         await loadProjects();
         $("project").value = result.project_id;
         $("import-message").textContent = "Started " + result.name;
@@ -674,6 +766,7 @@
       if (revision !== monitorRevision || pendingDelete) return;
       const id = $("project").value;
       if (!id) {
+        renderReview({}, "");
         $("project-state").className = "badge hidden";
         $("project-state").textContent = "";
         $("current-target").textContent = "Select a project";
@@ -711,6 +804,7 @@
       $("resume-workload").disabled = workloadActionBusy || !data.workload?.can_resume;
       $("restart-workload").disabled = workloadActionBusy || !data.workload?.can_restart;
       $("change-target").disabled = workloadActionBusy || !data.workload?.can_change_target;
+      renderReview(data, id);
       $("current-target").textContent = data.project.workspace_root || "Not available";
       const relocation = data.workload?.relocation;
       if (relocation) {

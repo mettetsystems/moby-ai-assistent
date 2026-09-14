@@ -59,6 +59,24 @@ If a workload is active, stop it using Monitor's two confirmations first. Wait f
 any directory copy to finish. It also works when the console is not running.
 Optional flags: `--config /path/to/config.yaml`, `--port 8743`, and `--no-browser`.
 
+To shut down without restarting, run this from another terminal (any directory):
+
+```bash
+~/moby-ai-assistent/scripts/shutdown.sh
+```
+
+It verifies the console belongs to this checkout/config, requests a clean pause
+for its active workload, waits for any directory copy, then closes the console
+through its cleanup path and waits for exit. Project files and saved progress are
+preserved; later use Start and **Resume** to continue. Cleanup closes owned model
+processes and flushes enabled tracing. Separately launched CLI jobs and external
+model servers are left running. The script does not force-kill the console;
+workload stopping uses the existing 45-second grace period and recorded fallback.
+
+Optional flags: `--config /path/to/config.yaml`, `--port 8743`, and
+`--timeout 180` (increase this for long directory copies). If nothing is running,
+it exits successfully. No sudo is needed.
+
 It does not reinstall packages. Keep the terminal open; Ctrl+C stops the console.
 Use **New workload** in the console to import a prompt and explicitly start coding work.
 
@@ -513,3 +531,95 @@ workspace directory, log files, research cache, and MLflow traces. Deletion cann
 be undone in the UI. Stop an active workload cleanly before deleting it; active
 runs and directory-copy operations are protected by execution locks. No existing
 projects are deleted when installing this feature.
+
+### Review and improve an existing codebase
+
+Greenfield creation remains the default. In **New workload**, choose **Review and
+improve an existing codebase**, enter its absolute directory and your improvement
+prompt, then select **Review codebase and propose plan**.
+
+- **MobyAI-native:** the Logic Reviewer reads recorded plans, supplied model
+  reasoning and validation outcomes. Its reasoning logic report informs the new
+  plan alongside your improvement prompt.
+- **Other codebases:** a read-only Code Reviewer performs code archaeology using
+  a local AST graph, BM25 search and graph-neighbor expansion. Its functionality
+  report informs the new plan. Application code is not executed during archaeology.
+- **Both workflows:** Monitor displays the proposed tasks, validation commands and
+  `review_influence` notes. Check the review acknowledgment and select **Approve
+  plan and start** to permit implementation. Resume alone cannot bypass approval.
+  Source changes before approval/first execution invalidate the reviewed snapshot.
+  Leave the plan unapproved to keep it paused; submit a fresh review with a revised
+  prompt if you want a different proposal.
+
+The Logic Reviewer and Code Reviewer are separate prompt/response roles using the
+existing Planner model and its managed service lifecycle. They do not allocate a
+second Qwen instance or execute Worker tools. Existing run/resume/restart/stop,
+recovery, tracing and deletion workflows remain available.
+
+### mobyMinutes and reports
+
+New planning runs create **`mobyMinutes/`** at the codebase root. Each run has its
+own directory containing the original prompt, full accepted plans and subsequent
+DAG patches, raw model requests/responses (including model-returned
+`reasoning_content` when present), local MLflow span snapshots when tracing is
+enabled, and task validation outcomes. Failed planning attempts are recorded too.
+Missing reasoning is explicitly unknown; generated rationale summaries are not
+represented as recovered internal reasoning. Old projects cannot retroactively
+recover traces that were never recorded.
+
+The **Generate logic report** button in Monitor creates JSON and readable Markdown
+reports. During a workload, the request is queued until a safe step boundary so
+review and Worker inference do not compete for the GPU. Completion also attempts
+a logic report automatically. Report failures appear in Monitor and can be retried;
+they do not turn a successfully completed project into a failed project.
+
+Top-level report files:
+
+- `mobyMinutes/reasoning-logic-report.md` and `.json`
+- `mobyMinutes/functionality-report.md` and `.json` for imported non-native code
+- `mobyMinutes/runs/<run-key>/` retains per-run reports, proposals, plan records,
+  and the reusable `code-graph.sqlite3` for archaeology runs.
+
+The new payload archive is local to the workspace; existing global MLflow tracing
+continues to export metadata rather than full prompts. These local minutes contain
+prompts and source excerpts: include them deliberately when sharing a codebase.
+Deleting a project from Monitor continues to preserve all workspace files,
+including its minutes. Older archived task outcomes remain usable after database
+project deletion; a missing historical outcome is reported as unknown.
+
+To generate a report without resuming coding:
+
+```bash
+./scripts/start.sh report PROJECT_ID
+```
+
+### Local archaeology tooling and coverage
+
+Install the optional parsers on another host with:
+
+```bash
+.venv/bin/python -m pip install -e '.[archaeology]'
+```
+
+Python uses its standard-library AST. Tree-sitter adapters cover JavaScript/JSX,
+TypeScript/TSX, Go, Rust, Java, C and C++. Several other common source formats are
+indexed as text with explicit coverage warnings. Parsers are installed locally;
+indexing neither downloads grammars nor sends code to a search API. Review inference
+uses the configured Planner endpoint, so use a local endpoint to keep the entire
+workflow on-host.
+
+The graph stores file/symbol nodes, containment, lexical neighbors, resolvable
+imports and *candidate* call links. SQLite FTS5/BM25 selects seeds; retrieval adds
+one-hop incoming and outgoing neighbors. This is static AST-backed GraphRAG,
+not a complete dynamic call graph. The reviewer can request up to four targeted
+queries per turn, for up to five turns, and records uncertainty and partial coverage.
+The index skips dependencies, generated directories, symlinks and likely secret
+files; files above 512 KB are not indexed. Indexing is bounded to 10,000 eligible
+files. Reports use bounded context and stop with an explicit review error when
+evidence exceeds it, rather than silently authorizing a partial plan.
+
+References: [Tree-sitter Python API](https://github.com/tree-sitter/py-tree-sitter),
+[MLflow manual tracing](https://www.mlflow.org/docs/latest/genai/tracing/app-instrumentation/manual-tracing/).
+
+Restart the **idle** console after upgrading to load the new backend routes. No
+existing projects need to be deleted or set up again.

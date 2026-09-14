@@ -108,6 +108,7 @@ def _parse_chat_completion(body: dict[str, Any], *, fallback_model: str) -> Mode
     usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
     return ModelResponse(
         content=content,
+        reasoning_content=message.get("reasoning_content") if isinstance(message.get("reasoning_content"), str) else None,
         model=str(body.get("model") or fallback_model),
         finish_reason=first.get("finish_reason"),
         prompt_tokens=usage.get("prompt_tokens"),

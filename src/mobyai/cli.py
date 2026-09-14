@@ -143,6 +143,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     run.add_argument("project")
     run.add_argument("--max-steps", type=int, default=None)
 
+    report = sub.add_parser("report", help="Generate a reasoning logic report without running coding tasks")
+    report.add_argument("project")
+
     status = sub.add_parser("status", help="Show project or list all projects")
     status.add_argument("project", nargs="?")
 
@@ -284,6 +287,7 @@ async def _dispatch(
             "run": lambda: _cmd_run(
                 session, args.project, stdout, max_steps=args.max_steps
             ),
+            "report": lambda: _cmd_report(session, args.project, stdout),
             "status": lambda: _cmd_status(session, args.project, stdout),
             "pause": lambda: _cmd_pause(session, args.project, stdout),
             "resume": lambda: _cmd_resume(
@@ -645,9 +649,9 @@ async def _cmd_resume(
 async def _execute_project(runtime, project, stdout, *, max_steps):
     from mobyai.engine.stopping import pause_interrupted
     from mobyai.engine.power import keep_awake
-    from mobyai.engine.lease import project_lease, ProjectBusyError
+    from mobyai.engine.lease import project_lease, workspace_lease, ProjectBusyError
     try:
-        with project_lease(runtime.config.persistence.database_path, project.project_id):
+        with project_lease(runtime.config.persistence.database_path, project.project_id), workspace_lease(runtime.config.persistence.database_path, project.workspace_root):
             project = await _require_project(runtime, project.project_id)
             if project.state == ProjectState.PAUSED:
                 if (project.last_error or '').startswith('Replan budget exhausted'):
@@ -699,6 +703,22 @@ async def _execute_project_inner(
 
     workspace = runtime.workspace_for(project)
     current = project
+    from mobyai.review.service import mode, prepare, approved, requested_report
+    review_mode = await mode(runtime.store, project)
+    if review_mode and current.state in {ProjectState.NEW, ProjectState.PLANNING}:
+        print('Review phase: ' + ('reasoning history' if review_mode == 'native' else 'code archaeology'), file=stdout, flush=True)
+        try:
+            await prepare(runtime, current)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            from mobyai.review.service import event
+            await event(runtime.store,current,'code_review_failed',{'error':str(exc)})
+            await runtime.store.projects.save(current.model_copy(update={'last_error':'Code review: '+str(exc)}))
+            from mobyai.engine.stopping import pause_interrupted
+            await pause_interrupted(runtime.store,current.project_id)
+            print('Review stopped: '+str(exc), file=stdout, flush=True)
+            return 1
     if current.state in {ProjectState.NEW, ProjectState.PLANNING}:
         planning_round = 0
         while True:
@@ -720,6 +740,12 @@ async def _execute_project_inner(
             f"planned {current.project_id}: {len(plan.tasks)} task(s) -> {current.state.value}",
             file=stdout,
         )
+
+    if review_mode and not await approved(runtime.store,current):
+        from mobyai.engine.stopping import pause_interrupted
+        await pause_interrupted(runtime.store,current.project_id)
+        print('Plan ready for human review in Monitor. No implementation has started.',file=stdout,flush=True)
+        return 0
 
     if current.state == ProjectState.PLAN_READY:
         current = ProjectStateMachine.transition(current, ProjectState.READY)
@@ -753,9 +779,20 @@ async def _execute_project_inner(
         f"decision={result.decision.value}",
         file=stdout,
     )
+    await requested_report(runtime,result.project,completed=result.project.state == ProjectState.COMPLETED)
     if result.project.last_error:
         print(f"last_error {result.project.last_error}", file=stdout)
     return 1 if result.project.state is ProjectState.FAILED else 0
+
+
+async def _cmd_report(runtime, project_id, stdout):
+    from mobyai.engine.lease import project_lease, workspace_lease
+    from mobyai.review.service import logic_report
+    project = await _require_project(runtime,project_id)
+    with project_lease(runtime.config.persistence.database_path,project_id), workspace_lease(runtime.config.persistence.database_path,project.workspace_root):
+        await logic_report(runtime,project)
+    print('Reasoning logic report saved in '+str(project.workspace_root/'mobyMinutes'),file=stdout)
+    return 0
 
 
 async def _cmd_status(runtime: Runtime, project_id: str | None, stdout: TextIO) -> int:

@@ -97,6 +97,8 @@ async def execute_task(
     On pass: VALIDATING → READY and the task is PASSED.
     On fail: project stays VALIDATING. Retry vs escalate is Phase 8.
     """
+    from mobyai.review.service import ensure_approved
+    await ensure_approved(store, project)
     timestamp = now or datetime.now(UTC)
     if project.state not in _START_STATES:
         raise WorkingError(

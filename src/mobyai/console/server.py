@@ -64,6 +64,13 @@ class ConsoleService:
     def monitor(self, project_id: str) -> dict[str, Any]:
         snapshot = self._call(build_monitor(self.runtime, project_id))
         snapshot["workload"] = self.workloads.status(project_id, snapshot["project"]["state"])
+        from mobyai.review.service import view
+        snapshot["review"] = view(self._call(self.runtime.store.projects.get(project_id)))
+        review_events = self._call(self.runtime.store.events.list_for_project(project_id))
+        for item in reversed(review_events):
+            if item.event in {'logic_report_failed', 'code_review_failed', 'logic_report_requested', 'logic_report_generated', 'code_archaeology_started', 'code_archaeology_completed', 'review_plan_proposed', 'review_plan_approved'}:
+                snapshot["review"]["job_status"] = item.event.replace('_', ' ') + (': '+str(item.payload['error']) if item.payload.get('error') else '')
+                break
         snapshot["launch_log"] = ""
         if project_id:
             log = self.workloads.log_path(project_id)
@@ -127,7 +134,7 @@ def make_handler(service: ConsoleService) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:
             route = urlparse(self.path).path
-            if route not in {"/api/projects", "/api/workloads/prepare-stop", "/api/workloads/stop", "/api/workloads/resume", "/api/workloads/restart", "/api/workloads/target", "/api/workloads/delete"}:
+            if route not in {"/api/projects", "/api/workloads/prepare-stop", "/api/workloads/stop", "/api/workloads/resume", "/api/workloads/restart", "/api/workloads/target", "/api/workloads/delete", "/api/workloads/approve-plan", "/api/workloads/report"}:
                 self._json(404, {"error": "not found"})
                 return
             origin = self.headers.get("Origin")
@@ -147,6 +154,8 @@ def make_handler(service: ConsoleService) -> type[BaseHTTPRequestHandler]:
                            "/api/workloads/prepare-stop": service.workloads.prepare_stop,
                            "/api/workloads/stop": service.workloads.stop,
                            "/api/workloads/delete": service.workloads.delete,
+                           "/api/workloads/approve-plan": service.workloads.approve_plan,
+                           "/api/workloads/report": service.workloads.report,
                            "/api/workloads/resume": service.workloads.resume,
                            "/api/workloads/restart": service.workloads.restart,
                            "/api/workloads/target": service.workloads.change_target}[route]

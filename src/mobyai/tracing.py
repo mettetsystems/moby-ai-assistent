@@ -1,5 +1,5 @@
 """Optional MLflow spans. Payloads, source code, secrets and prompts are not exported."""
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import wraps
 import inspect
 import logging
@@ -75,6 +75,8 @@ def span(name, **attributes):
         if manager is not None:
             try:
                 manager.__exit__(None, None, None)
+                from mobyai.review.minutes import capture_span
+                capture_span(active)
             except Exception:
                 _log.warning("MLflow span export failed; workload continues", exc_info=False)
 
@@ -96,14 +98,22 @@ def traced(name):
             call = arguments.get("call")
             if call is not None:
                 metadata["tool"] = call.name.value
-            with span(name, **metadata) as active:
-                result = await function(*args, **kwargs)
-                for key in ("exit_code", "timed_out", "ok", "passed", "duration_seconds"):
-                    value = getattr(result, key, None)
-                    if isinstance(value, (bool, int, float)):
-                        attribute(active, key, value)
-                        if (key in {"ok", "passed"} and not value) or (key == "exit_code" and value != 0):
-                            failed(active, "validation_failure")
-                return result
+            from mobyai.review.minutes import recording
+            archive = recording(project, name) if name in {"planner.plan", "planner.replan"} and arguments.get("workspace") is not None else nullcontext(None)
+            with archive as record:
+                with span(name, **metadata) as active:
+                    result = await function(*args, **kwargs)
+                    for key in ("exit_code", "timed_out", "ok", "passed", "duration_seconds"):
+                        value = getattr(result, key, None)
+                        if isinstance(value, (bool, int, float)):
+                            attribute(active, key, value)
+                            if (key in {"ok", "passed"} and not value) or (key == "exit_code" and value != 0):
+                                failed(active, "validation_failure")
+                    from mobyai.review.minutes import capture_result
+                    capture_result(record, result)
+                    if name == "worker.attempt":
+                        from mobyai.review.minutes import capture_outcome
+                        capture_outcome(project, result)
+                    return result
         return wrapped
     return decorate

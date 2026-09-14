@@ -137,6 +137,8 @@ class StructuredGenerator:
                   temperature=request.temperature, top_p=request.top_p,
                   top_k=request.top_k) as active:
             response = await self.provider.generate(request)
+            from mobyai.review.minutes import capture_call
+            capture_call(request, response)
             attribute(active, "prompt_tokens", response.prompt_tokens)
             attribute(active, "completion_tokens", response.completion_tokens)
             attribute(active, "finish_reason", response.finish_reason)

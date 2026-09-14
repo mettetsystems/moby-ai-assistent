@@ -201,6 +201,10 @@ async def run_project(
                   if item.event == "sampling_recovery"), 0)
     for _ in (count() if max_steps is None else range(max(max_steps, 1))):
         await asyncio.sleep(0)
+        from mobyai.review.service import requested_report
+        from types import SimpleNamespace
+        if planner is not None:
+            await requested_report(SimpleNamespace(store=store,planner=planner,services=services),current)
         if current.state == ProjectState.ESCALATING:
             if planner is None:
                 if last is not None:

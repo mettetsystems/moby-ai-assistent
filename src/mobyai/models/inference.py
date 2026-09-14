@@ -32,6 +32,7 @@ class ModelResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     content: str
+    reasoning_content: str | None = None
     model: str
     finish_reason: str | None = None
     prompt_tokens: int | None = None

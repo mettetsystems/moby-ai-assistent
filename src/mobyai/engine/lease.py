@@ -38,3 +38,10 @@ def project_is_running(database_path, project_id):
             return True
         fcntl.flock(stream, fcntl.LOCK_UN)
     return False
+
+
+@contextmanager
+def workspace_lease(database_path, workspace_root):
+    """Also serialize different project IDs that intentionally share a codebase."""
+    with project_lease(database_path, 'workspace:' + str(workspace_root.resolve())):
+        yield

@@ -42,6 +42,8 @@ class PlannerOutput(BaseModel):
 
     project_name: str = Field(min_length=1)
     architecture_summary: str = Field(min_length=1)
+    review_influence: list[str] = Field(default_factory=list)
+    rationale_summary: str = ""
     directory_structure: list[str] = Field(default_factory=list)
     tasks: list[PlannerTaskSpec]
     documentation_requirements: list[str] = Field(default_factory=list)
@@ -60,6 +62,7 @@ class DAGPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     summary: str = Field(min_length=1)
+    rationale_summary: str = ""
     architecture_summary: str | None = None
     directory_structure: list[str] = Field(default_factory=list)
     supersede: list[TaskSupersede] = Field(min_length=1)

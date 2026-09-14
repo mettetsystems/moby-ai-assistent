@@ -177,3 +177,26 @@ test('monitor colors current status even when a passed task has failure history'
   assert.match(p.element('steps').innerHTML,/badge state-testing/);
   assert.match(p.element('steps').innerHTML,/badge state-failed/);
 });
+test('existing code review requires an explicit checked approval for the displayed revision',async()=>{
+  const p=page();
+  const data={review:{proposal:{revision:'review-v1',approved:false,plan:{tasks:[]}}}};
+  p.context.reviewData=data;
+  vm.runInContext('renderReview(reviewData,"demo")',p.context);
+  await p.element('approve-plan').onclick();
+  assert.equal(p.calls.filter(([url])=>url==='/api/workloads/approve-plan').length,0);
+  p.element('plan-reviewed').checked=true;
+  await p.element('approve-plan').onclick();
+  const call=p.calls.find(([url])=>url==='/api/workloads/approve-plan');
+  assert.deepEqual(JSON.parse(call[1].body),{project_id:'demo',revision:'review-v1'});
+});
+test('changing the proposed revision clears approval and report content is plain text',()=>{
+  const p=page();
+  p.context.reviewData={review:{proposal:{revision:'v1',plan:{tasks:[]}},logic_report:{summary:'<script>bad()</script>'}}};
+  vm.runInContext('renderReview(reviewData,"demo")',p.context);
+  p.element('plan-reviewed').checked=true;
+  p.context.reviewData.review.proposal.revision='v2';
+  vm.runInContext('renderReview(reviewData,"demo")',p.context);
+  assert.equal(p.element('plan-reviewed').checked,false);
+  assert.equal(p.element('review-report').innerHTML,'');
+  assert.match(p.element('review-report').textContent,/<script>/);
+});

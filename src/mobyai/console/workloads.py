@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from mobyai.models.event import EventRecord
 from mobyai.models.project import Project, ProjectState
-from mobyai.engine.lease import project_lease, project_is_running
+from mobyai.engine.lease import project_lease, project_is_running, workspace_lease
 
 MAX_PROMPT_BYTES = 1_000_000
 
@@ -46,6 +46,11 @@ class Workloads:
             raise ValueError("Prompt exceeds the 1 MB import limit")
         async with self.lock:
             self._assert_idle()
+            workflow = payload.get('workflow', 'greenfield')
+            if workflow == 'existing':
+                return await self._create_existing(name.strip(), prompt, payload.get('target_directory'))
+            if workflow != 'greenfield':
+                raise ValueError('Unknown workflow')
             return await self._create(name.strip(), prompt, payload.get('target_directory'))
 
     def _busy(self):
@@ -100,6 +105,52 @@ class Workloads:
         if restarted_from:
             await self.event(project_id, 'workload_restarted', {'source_project_id': restarted_from})
         return await self._launch(project, 'run')
+
+    async def _create_existing(self, name, prompt, target):
+        from mobyai.review import minutes
+        workspace = self._target(target)
+        if not workspace.is_dir() or not any(workspace.iterdir()):
+            raise ValueError('Choose a non-empty existing codebase directory')
+        native = minutes.native(workspace)
+        for id in await self.runtime.store.projects.list_ids():
+            other = await self.runtime.store.projects.get(id)
+            if other is None: continue
+            root = other.workspace_root.resolve()
+            if root == workspace:
+                if project_is_running(self.runtime.config.persistence.database_path, id):
+                    raise ValueError('Another workload is using this codebase')
+                native = native or not (workspace/'mobyMinutes'/'manifest.json').exists()
+            elif workspace.is_relative_to(root) or root.is_relative_to(workspace):
+                raise ValueError('Choose a root that does not overlap another project')
+        now = datetime.now(UTC)
+        project = Project(project_id='import-'+uuid4().hex[:12],name=name,objective=prompt,
+                          workspace_root=workspace,created_at=now,updated_at=now)
+        minutes.initialize(project, origin='greenfield' if native else 'external')
+        await self.runtime.store.projects.save(project)
+        await self.event(project.project_id,'existing_codebase_imported',{'mode':'native' if native else 'external'})
+        return await self._launch(project,'run')
+
+    async def approve_plan(self, payload):
+        from mobyai.review.service import approve
+        async with self.lock:
+            project=await self._project(payload)
+            self._assert_stopped(project)
+            with project_lease(self.runtime.config.persistence.database_path, project.project_id):
+                with workspace_lease(self.runtime.config.persistence.database_path, project.workspace_root):
+                    await approve(self.runtime,project,payload.get('revision'))
+            return await self._launch(project,'resume')
+
+    async def report(self, payload):
+        async with self.lock:
+            project=await self._project(payload)
+            if self._busy():
+                if self.project_id != project.project_id:
+                    raise ValueError('Wait for the other workload before requesting this report')
+                await self.event(project.project_id,'logic_report_requested',{})
+                return {'status':'queued','message':'Report queued for the next safe step boundary'}
+            self._assert_stopped(project)
+            await self._launch(project,'report')
+            return {'status':'started','message':'Generating reasoning logic report'}
 
     def log_path(self, project_id):
         name = project_id if re.fullmatch(r'[A-Za-z0-9_-]{1,128}', project_id) else sha256(project_id.encode()).hexdigest()

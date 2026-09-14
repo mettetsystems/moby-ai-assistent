@@ -65,13 +65,17 @@ async def plan_project(
     try:
         if services is not None:
             await services.ensure_role_available(AgentRole.PLANNER)
+        from mobyai.review.service import plan_context
         plan = await agent.create_plan(
-            project.objective + ("\nPrevious planning validation error to correct:\n" + project.last_error if (project.last_error or "").startswith("Planner recovery:") else ""),
+            project.objective + (plan_context(project) if workspace is not None else "") + ("\nPrevious planning validation error to correct:\n" + project.last_error if (project.last_error or "").startswith("Planner recovery:") else ""),
             project_name=project.name,
             existing_paths=existing_paths,
             inspector=_inspector(workspace),
             module_contracts=module_contracts,
         )
+        from mobyai.review.service import mode
+        if await mode(store, project) and not plan.review_influence:
+            raise PlanValidationError('Existing-codebase plans require concrete review_influence notes')
     except _PLAN_FAILURES as exc:
         failed = ProjectStateMachine.transition(
             project.model_copy(update={"last_error": str(exc)}),
@@ -112,6 +116,10 @@ async def plan_project(
         timestamp,
         {"task_count": len(graph)},
     )
+    from mobyai.review.service import mode, propose
+    if await mode(store, ready):
+        await propose(store, ready, plan)
+        scaffold = False
     if scaffold and workspace is not None:
         _scaffold_directories(workspace, plan.directory_structure)
     return ready, plan
