@@ -20,7 +20,7 @@ class OpenAICompatibleProvider:
         model: str,
         *,
         api_key: str | None = None,
-        timeout_seconds: float = 120,
+        timeout_seconds: float = 600,
         max_transport_retries: int = 2,
         client: httpx.AsyncClient | None = None,
     ) -> None:

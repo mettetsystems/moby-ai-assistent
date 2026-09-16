@@ -200,3 +200,28 @@ test('changing the proposed revision clears approval and report content is plain
   assert.equal(p.element('review-report').innerHTML,'');
   assert.match(p.element('review-report').textContent,/<script>/);
 });
+
+
+test('secret submission clears input even on failure and sends CSRF proof', async()=>{
+  const p=page();
+  p.context.fetch=async(url,options)=> {
+    if (options?.method === 'POST') {
+      assert.equal(p.element('secret-value').value,'');
+      assert.equal(options.headers['X-MobyAI-Vault-CSRF'],'proof');
+      assert.equal(JSON.parse(options.body).value,'dummy-token');
+      return {ok:false,status:400,text:async()=>JSON.stringify({error:'Vault locked'})};
+    }
+    return {ok:true,text:async()=>JSON.stringify({available:true,backend:'Local vault',message:'Ready',csrf_token:'proof',providers:[{id:'github',name:'GitHub',configured:false,usage:'Storage only'}]})};
+  };
+  await vm.runInContext('loadSecrets()',p.context);
+  p.element('secret-value').value='dummy-token';
+  await p.element('secrets-form').onsubmit({preventDefault(){}});
+  assert.equal(p.element('secret-value').value,'');
+  assert.equal(p.element('secret-result').textContent,'Vault locked');
+});
+test('secret removal requires explicit confirmation', async()=>{
+  const p=page();
+  vm.runInContext('secretsState = {available:true,providers:[],csrf_token:"proof"}',p.context);
+  await p.element('secret-remove').onclick();
+  assert.equal(p.calls.filter(([url])=>url==='/api/secrets').length,0);
+});

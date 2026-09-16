@@ -383,3 +383,15 @@ The integration suite uses scripted Planner/Worker/Orchestrator payloads under `
 | `setup` says stdin is not a terminal | Use `--non-interactive` or `./scripts/setup.sh` from a real TTY |
 
 Read [`README.md`](../README.md) for day-to-day commands after this file is done.
+
+## Long model responses
+
+`runtime.inference_timeout_seconds` defaults to `600` (10 minutes) for all agent roles.
+The current client waits for a complete, non-streamed response, so a model can be
+actively generating while the client waits. Increase this setting if legitimate
+responses need more time. This is an HTTP timeout per attempt; transport retries
+can make the total wait longer. It does not change command execution timeouts.
+
+Existing installations should set this value in their active configuration file;
+an explicitly configured shorter timeout still takes precedence over the default.
+Restart MobyAI after the current run is idle to apply the change.

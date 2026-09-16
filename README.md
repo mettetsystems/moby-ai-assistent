@@ -37,6 +37,42 @@ mobyai setup
 
 Then `source .venv/bin/activate` in every new shell.
 
+## Local secrets vault
+
+Open the **Secrets** tab to save, replace, or remove tokens for Hugging Face, GitHub,
+GitLab, Google Gemini / AI Studio, OpenAI, Anthropic, Mistral, npm, Brave Search,
+and Semantic Scholar. These are ten common credential types; saved values are
+never returned to the browser. Removal requires the confirmation checkbox.
+
+Install the optional integration, then restart the console:
+
+```bash
+cd ~/moby-ai-assistent
+.venv/bin/python -m pip install -e '.[vault]'
+```
+
+On Fedora, the local open-source vault is GNOME Keyring (Secret Service).
+Use **Passwords and Keys** to create/unlock your default login keyring. Keep a
+non-empty keyring password for encrypted storage at rest. If needed, install the
+desktop components with `sudo dnf install gnome-keyring seahorse`. Run MobyAI as
+your desktop user in the same D-Bus session, not with sudo. There is no plaintext
+fallback; a locked or unavailable vault displays instructions in the tab.
+
+Hugging Face downloads and Brave/Semantic Scholar research use saved tokens when
+existing environment credentials (and the legacy Hugging Face token file) are
+absent. Other providers are currently **storage-only**: saving a key does not
+configure an inference provider, authenticate Git, or expose it to worker shell
+commands. The Google entry accepts a Gemini API key, not a Workspace password or
+Google Scholar credential. Tokens are not added to prompts, trace attributes,
+project files, YAML, or MobyAI's SQLite database. Existing token files are not
+migrated or deleted automatically.
+
+The Secrets API is limited to the loopback, same-origin console and requires a
+per-console anti-CSRF token for changes. The desktop vault is protected at rest,
+but is not an isolation boundary against processes running as the same user in
+an unlocked session. Do not run untrusted generated code under an account that
+has access to sensitive credentials.
+
 ## Starting after installation
 
 Use [`scripts/start.sh`](scripts/start.sh) to launch the installed application:

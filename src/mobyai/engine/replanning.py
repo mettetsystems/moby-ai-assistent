@@ -25,7 +25,7 @@ from mobyai.models.escalation import EscalationPackage
 from mobyai.models.event import EventRecord
 from mobyai.models.planner import DAGPatch
 from mobyai.models.project import Project, ProjectState
-from mobyai.models.task import Task
+from mobyai.models.task import Task, TaskStatus
 from mobyai.state.repository import StateStore
 
 _REPLAN_FAILURES = (
@@ -70,10 +70,19 @@ async def replan_project(
         )
         await store.projects.save(project)
 
-    loaded = package or await load_escalation_package(store, project.project_id)
+    if project.current_task_id is None:
+        raise ReplanError("Cannot replan without a current failed task")
+    loaded = package or await load_escalation_package(
+        store, project.project_id, task_id=project.current_task_id
+    )
     if (project.last_error or '').startswith('Planner recovery:'):
         loaded = loaded.model_copy(update={'decision_summary':(loaded.decision_summary or '') + '\nCorrect the previous replan validation error: ' + project.last_error})
     tasks = await store.tasks.list_for_project(project.project_id)
+    failed = next((task for task in tasks if task.task_id == project.current_task_id), None)
+    if (failed is None or failed.status is not TaskStatus.FAILED
+            or loaded.failed_task.task_id != failed.task_id
+            or loaded.failed_task.attempt_count != failed.attempt_count):
+        raise ReplanError("Escalation package does not match the current failed task attempt")
     existing_paths = await _existing_paths(workspace)
     module_contracts = await _module_contract_listings(store, project.project_id, workspace)
     try:
@@ -146,11 +155,15 @@ async def replan_project(
     return ReplanResult(project=ready, patch=patch, tasks=graph.tasks())
 
 
-async def load_escalation_package(store: StateStore, project_id: str) -> EscalationPackage:
+async def load_escalation_package(
+    store: StateStore, project_id: str, *, task_id: str | None = None
+) -> EscalationPackage:
     checkpoints = await store.checkpoints.list(project_id)
     for item in reversed(checkpoints):
         if item.kind is CheckpointKind.ESCALATION:
-            return EscalationPackage.model_validate(item.payload)
+            package = EscalationPackage.model_validate(item.payload)
+            if task_id is None or package.failed_task.task_id == task_id:
+                return package
     raise ReplanError(f"No escalation package found for project {project_id}")
 
 

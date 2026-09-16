@@ -21,6 +21,16 @@ async def call_research(tool,arguments):
         'BRAVE_SEARCH_API_KEY','SEMANTIC_SCHOLAR_API_KEY','MOBYAI_RESEARCH_CACHE',
         'MOBYAI_RESEARCH_CACHE_FRESH_DAYS','MOBYAI_RESEARCH_CACHE_IDLE_WEEKS',
         'MOBYAI_RESEARCH_CACHE_MAX_AGE_WEEKS','MOBYAI_RESEARCH_CACHE_MAX_ENTRIES') if key in os.environ}
+    if tool == 'research_search':
+        from mobyai.vault import optional_token
+        # Supply only the credential for the selected provider to the fixed MCP child.
+        source = arguments.get('source', 'dblp')
+        provider, variable = (('semantic_scholar', 'SEMANTIC_SCHOLAR_API_KEY')
+                              if source == 'semantic_scholar' else ('brave', 'BRAVE_SEARCH_API_KEY'))
+        if source not in {'dblp', 'zenodo'} and not env.get(variable):
+            token = await asyncio.to_thread(optional_token, provider)
+            if token:
+                env[variable] = token
     params = StdioServerParameters(command=sys.executable, args=['-m','mobyai.research.server'], env=env)
     try:
         async with asyncio.timeout(60):

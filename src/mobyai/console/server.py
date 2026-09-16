@@ -6,6 +6,8 @@ import json
 import logging
 import re
 import threading
+import secrets
+import ipaddress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -31,6 +33,9 @@ class ConsoleService:
         self._call = caller
         self.workloads = Workloads(runtime, config_path)
         self.traces = TraceBrowser(runtime.config)
+        from mobyai.vault import Vault
+        self.vault = Vault()
+        self.vault_csrf = secrets.token_urlsafe(32)
 
     def settings(self) -> dict[str, Any]:
         return serialize_role_settings(self.runtime.config)
@@ -89,8 +94,60 @@ def make_handler(service: ConsoleService) -> type[BaseHTTPRequestHandler]:
         def log_message(self, format: str, *args: object) -> None:  # noqa: A003
             return
 
+        def _vault_allowed(self, mutation=False):
+            host = self.headers.get('Host', '')
+            try:
+                parsed = urlparse('http://' + host)
+                local = ipaddress.ip_address(self.client_address[0]).is_loopback
+                expected_port = self.server.server_address[1]
+                valid_host = parsed.hostname in {'localhost', '127.0.0.1', '::1'} and (parsed.port or 80) == expected_port
+            except ValueError:
+                local = valid_host = False
+            origin = self.headers.get('Origin')
+            if not local or not valid_host or (origin and origin != 'http://' + host) or self.headers.get('Sec-Fetch-Site') == 'cross-site':
+                self._json(403, {'error':'Secrets are accessible only through the local, same-origin console.'})
+                return False
+            if mutation and not secrets.compare_digest(self.headers.get('X-MobyAI-Vault-CSRF',''), service.vault_csrf):
+                self._json(403, {'error':'Refresh the Secrets tab before saving.'})
+                return False
+            return True
+
+        def _vault_mutation(self):
+            if not self._vault_allowed(mutation=True): return
+            if self.headers.get('Content-Type','').split(';')[0] != 'application/json':
+                self._json(415, {'error':'Use application/json.'})
+                return
+            from mobyai.vault import VaultError
+            try:
+                length=int(self.headers.get('Content-Length','0'))
+                if not 0 < length <= 20000:
+                    raise VaultError('Credential request is too large or empty.')
+                payload=json.loads(self.rfile.read(length).decode('utf-8'))
+                if not isinstance(payload,dict): raise VaultError('Expected a credential object.')
+                provider=payload.get('provider')
+                if not isinstance(provider,str): raise VaultError('Choose a credential provider.')
+                action=payload.get('action')
+                if action == 'save':
+                    service.vault.save(provider,payload.get('value'))
+                elif action == 'remove' and payload.get('confirmation') == provider:
+                    service.vault.remove(provider)
+                else:
+                    raise VaultError('Choose Save or explicitly confirm removal.')
+            except VaultError as exc:
+                self._json(400, {'error':str(exc)})
+                return
+            except Exception:
+                # Never serialize parser/backend exceptions: they can contain a submitted token.
+                self._json(400, {'error':'Credential could not be saved or removed. Check the local vault and retry.'})
+                return
+            self._json(200, {'ok':True})
+
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
+            if parsed.path == '/api/secrets':
+                if not self._vault_allowed(): return
+                self._json(200, {**service.vault.status(), 'csrf_token':service.vault_csrf})
+                return
             if parsed.path in {"/", "/index.html"}:
                 self._send(200, UI_PATH.read_text(encoding="utf-8"), "text/html; charset=utf-8")
                 return
@@ -134,6 +191,9 @@ def make_handler(service: ConsoleService) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:
             route = urlparse(self.path).path
+            if route == "/api/secrets":
+                self._vault_mutation()
+                return
             if route not in {"/api/projects", "/api/workloads/prepare-stop", "/api/workloads/stop", "/api/workloads/resume", "/api/workloads/restart", "/api/workloads/target", "/api/workloads/delete", "/api/workloads/approve-plan", "/api/workloads/report"}:
                 self._json(404, {"error": "not found"})
                 return
@@ -185,6 +245,8 @@ def make_handler(service: ConsoleService) -> type[BaseHTTPRequestHandler]:
             body = json.dumps(payload, default=str).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

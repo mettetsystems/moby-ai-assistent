@@ -25,7 +25,7 @@ _OPENAI_COMPATIBLE = frozenset(
 def provider_from_role_config(
     config: RoleModelConfig,
     *,
-    timeout_seconds: float = 120,
+    timeout_seconds: float = 600,
     client: httpx.AsyncClient | None = None,
 ) -> InferenceProvider:
     name = config.provider.strip().lower()

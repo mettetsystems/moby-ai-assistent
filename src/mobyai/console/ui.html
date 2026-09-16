@@ -186,6 +186,7 @@
       <button id="tab-import" class="active" type="button">New workload</button>
       <button id="tab-settings" type="button">Settings</button>
       <button id="tab-monitor" type="button">Monitor</button>
+      <button id="tab-secrets" type="button">Secrets</button>
       <button id="tab-traces" type="button">Traces</button>
     </nav>
     <span id="save-status" class="status"></span>
@@ -210,6 +211,24 @@
         <p id="launch-help" class="hint">The full text is saved as the project objective. Starting uses the configured models and executes coding tools in a new workspace. Keep this console running. Import size is not a guarantee that the prompt fits your model’s context window.</p>
         <button id="launch-workload" class="btn primary" type="submit">Create and start</button>
         <p id="import-message" class="status" role="status"></p>
+      </form>
+    </section>
+    <section id="secrets-view" class="card hidden">
+      <h2>Local secrets vault</h2>
+      <p>Store API tokens in your desktop Secret Service vault. Saved values cannot be displayed here. Unlock your login keyring in Passwords and Keys if needed.</p>
+      <button id="secrets-refresh" class="btn" type="button">Refresh vault</button>
+      <p id="secrets-status" role="status"></p>
+      <form id="secrets-form" autocomplete="off">
+        <label for="secret-provider">Provider</label>
+        <select id="secret-provider"></select>
+        <p id="secret-usage" class="hint"></p>
+        <label for="secret-value">New API key or token</label>
+        <input id="secret-value" type="password" autocomplete="new-password" spellcheck="false" maxlength="8192"/>
+        <p class="hint">Saving replaces this provider's existing MobyAI token. Tokens are not automatically shared with agents or shell commands.</p>
+        <button id="secret-save" class="btn primary" type="submit" disabled>Save token</button>
+        <button id="secret-remove" class="btn" type="button" disabled>Remove saved token</button>
+        <label><input id="secret-confirm-remove" type="checkbox"/> I confirm removal of the selected provider's MobyAI token.</label>
+        <p id="secret-result" role="status"></p>
       </form>
     </section>
     <section id="settings-view" class="hidden">
@@ -319,6 +338,11 @@
       $("tab-traces").classList.toggle("active", name === "traces");
       if (name === "traces" && !tracesLoaded) loadTraces();
       if (name === "monitor") loadMonitor();
+      $("secrets-view").classList.toggle("hidden", name !== "secrets");
+      $("tab-secrets").classList.toggle("active", name === "secrets");
+      $("secret-value").value = "";
+      $("secret-confirm-remove").checked = false;
+      if (name === "secrets") loadSecrets();
     }
 
     async function apiJson(path, options) {
@@ -330,6 +354,66 @@
       if (!response.ok) throw new Error(body.error || "HTTP " + response.status);
       return body;
     }
+
+    let secretsState = {available:false, providers:[]};
+    let secretBusy = false;
+    function secretControls() {
+      const provider = secretsState.providers.find(p => p.id === $("secret-provider").value);
+      $("secret-usage").textContent = provider?.usage || "";
+      $("secret-save").disabled = secretBusy || !secretsState.available || !provider || !$("secret-value").value.trim();
+      $("secret-remove").disabled = secretBusy || !secretsState.available || !provider?.configured || !$("secret-confirm-remove").checked;
+      $("secret-provider").disabled = secretBusy;
+      $("secrets-refresh").disabled = secretBusy;
+    }
+    async function loadSecrets() {
+      try {
+        const data = await apiJson("/api/secrets");
+        secretsState = data;
+        const previous = $("secret-provider").value;
+        $("secret-provider").innerHTML = data.providers.map(p => `<option value="${esc(p.id)}">${esc(p.name)} — ${p.configured === null ? "unknown" : p.configured ? "saved" : "not set"}</option>`).join("");
+        $("secret-provider").value = data.providers.some(p => p.id === previous) ? previous : data.providers[0]?.id || "";
+        $("secrets-status").textContent = data.backend + ": " + data.message;
+      } catch (error) {
+        secretsState = {available:false, providers:[]};
+        $("secrets-status").textContent = error.message;
+      }
+      secretControls();
+    }
+    async function mutateSecret(action) {
+      if (secretBusy || !secretsState.available) return;
+      const provider = $("secret-provider").value;
+      if (action === "remove" && !$("secret-confirm-remove").checked) return;
+      const payload = {action, provider};
+      if (action === "save") payload.value = $("secret-value").value;
+      else payload.confirmation = provider;
+      $("secret-value").value = "";
+      $("secret-confirm-remove").checked = false;
+      secretBusy = true;
+      secretControls();
+      try {
+        await apiJson("/api/secrets", {method:"POST", headers:{"Content-Type":"application/json", "X-MobyAI-Vault-CSRF":secretsState.csrf_token}, body:JSON.stringify(payload)});
+        $("secret-result").textContent = action === "save" ? "Token saved in the local vault." : "Saved token removed.";
+        await loadSecrets();
+      } catch (error) {
+        $("secret-result").textContent = error.message;
+      } finally {
+        delete payload.value;
+        secretBusy = false;
+        secretControls();
+      }
+    }
+    $("tab-secrets").onclick = () => showTab("secrets");
+    $("secrets-refresh").onclick = loadSecrets;
+    $("secret-provider").onchange = () => {
+      $("secret-value").value = "";
+      $("secret-confirm-remove").checked = false;
+      $("secret-result").textContent = "";
+      secretControls();
+    };
+    $("secret-value").oninput = secretControls;
+    $("secret-confirm-remove").onchange = secretControls;
+    $("secrets-form").onsubmit = event => { event.preventDefault(); return mutateSecret("save"); };
+    $("secret-remove").onclick = () => mutateSecret("remove");
 
     let workloadActionBusy = false;
     let targetProject = null;

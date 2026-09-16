@@ -117,3 +117,14 @@ def test_is_complete_ignores_superseded() -> None:
     ]
     graph = TaskGraph(tasks, validate=True)
     assert graph.is_complete() is True
+
+
+def test_cannot_replace_a_superseded_task_again():
+    tasks = [
+        make_task("OLD", status=TaskStatus.SUPERSEDED, superseded_by="NEW"),
+        make_task("NEW", status=TaskStatus.FAILED),
+        make_task("DOWNSTREAM", dependencies=["NEW"], status=TaskStatus.BLOCKED),
+    ]
+    patch = _patch(TaskSupersede(task_id="OLD", replacements=[_spec("OTHER")]))
+    with pytest.raises(DAGPatchError, match="already superseded"):
+        apply_dag_patch(tasks, patch, failed_task_id="OLD")

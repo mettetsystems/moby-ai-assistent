@@ -17,7 +17,7 @@ runtime:
   max_output_bytes: 1048576
   max_log_bytes: 52428800
   max_schema_repair_attempts: 2
-  inference_timeout_seconds: 300
+  inference_timeout_seconds: 600
   max_worker_turns: 8
   max_planner_inspect_turns: 3
 

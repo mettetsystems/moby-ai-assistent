@@ -395,3 +395,45 @@ async def test_replan_inspects_then_patches(tmp_path: Path) -> None:
     assert result.project.state == ProjectState.READY
     assert "BROKEN" in provider.requests[1].messages[-1].content
     assert (workspace.root / "src" / "app.py").read_text(encoding="utf-8") == "BROKEN = True\n"
+
+
+async def test_replan_uses_current_task_when_checkpoint_times_tie(tmp_path):
+    store, workspace = await _escalated_store(tmp_path)
+    old = await load_escalation_package(store, "proj-1")
+    replacement = old.failed_task.model_copy(update={"task_id": "STEP_001_V10"})
+    tasks = await store.tasks.list_for_project("proj-1")
+    for task in tasks:
+        if task.task_id == "STEP_001":
+            task.status = TaskStatus.SUPERSEDED
+            task.superseded_by = replacement.task_id
+        if task.task_id == "STEP_002":
+            task.dependencies = [replacement.task_id]
+    await store.tasks.save_all("proj-1", [*tasks, replacement])
+    current_package = old.model_copy(update={"failed_task": replacement})
+    # Same time, but stale checkpoint sorts last. It must not be selected.
+    for key, package in [("aaa-current", current_package), ("zzz-stale", old)]:
+        await store.checkpoints.save(Checkpoint(
+            checkpoint_id=key, project_id="proj-1", kind=CheckpointKind.ESCALATION,
+            created_at=FROZEN_NOW, payload=package.model_dump(mode="json")))
+    project = (await store.projects.get("proj-1")).model_copy(
+        update={"current_task_id": replacement.task_id})
+    await store.projects.save(project)
+    payload = _patch_payload()
+    payload["supersede"][0]["task_id"] = replacement.task_id
+    provider, agent = _planner([json.dumps(payload)])
+    result = await replan_project(project, store, agent, workspace=workspace, now=FROZEN_NOW)
+    by_id = {task.task_id: task for task in result.tasks}
+    assert by_id[replacement.task_id].status == TaskStatus.SUPERSEDED
+    assert by_id["STEP_002"].dependencies == ["STEP_001B"]
+    assert len(provider.requests) == 1
+
+
+async def test_replan_rejects_stale_explicit_package(tmp_path):
+    store, workspace = await _escalated_store(tmp_path)
+    package = await load_escalation_package(store, "proj-1")
+    stale = package.model_copy(update={"failed_task": package.failed_task.model_copy(
+        update={"attempt_count": 1})})
+    provider, agent = _planner([])
+    with pytest.raises(ReplanError, match="current failed task attempt"):
+        await replan_project(await store.projects.get("proj-1"), store, agent, package=stale)
+    assert not provider.requests

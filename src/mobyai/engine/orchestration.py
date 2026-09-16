@@ -201,6 +201,7 @@ async def run_project(
                   if item.event == "sampling_recovery"), 0)
     for _ in (count() if max_steps is None else range(max(max_steps, 1))):
         await asyncio.sleep(0)
+        timestamp = now or datetime.now(UTC)
         from mobyai.review.service import requested_report
         from types import SimpleNamespace
         if planner is not None:

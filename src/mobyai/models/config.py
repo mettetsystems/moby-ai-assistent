@@ -114,7 +114,7 @@ class RuntimeConfig(_StrictModel):
     max_output_bytes: int = Field(default=1_048_576, ge=1024)
     max_log_bytes: int = Field(default=52_428_800, ge=1024)
     max_schema_repair_attempts: int = Field(default=2, ge=0)
-    inference_timeout_seconds: int = Field(default=120, ge=1)
+    inference_timeout_seconds: int = Field(default=600, ge=1)
     max_worker_turns: int = Field(default=8, ge=1)
     max_planner_inspect_turns: int = Field(default=3, ge=0)
 

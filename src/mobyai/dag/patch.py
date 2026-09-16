@@ -137,6 +137,8 @@ def _validate_patch(
         existing = by_id.get(item.task_id)
         if existing is None:
             raise DAGPatchError(f"cannot supersede unknown task {item.task_id}")
+        if existing.status is TaskStatus.SUPERSEDED:
+            raise DAGPatchError(f"cannot supersede already superseded task {item.task_id}")
         if existing.status in _PROTECTED:
             raise DAGPatchError(f"cannot supersede PASSED task {item.task_id}")
         if item.task_id not in branch:

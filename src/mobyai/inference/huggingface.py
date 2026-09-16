@@ -32,8 +32,11 @@ def resolve_huggingface_token(config: AppConfig | None = None) -> str | None:
         if value:
             return value
     if config is not None:
-        return token_from_file(config.huggingface.token_file)
-    return None
+        token = token_from_file(config.huggingface.token_file)
+        if token:
+            return token
+    from mobyai.vault import optional_token
+    return optional_token("huggingface")
 
 
 def huggingface_environ(config: AppConfig | None = None) -> dict[str, str]:
