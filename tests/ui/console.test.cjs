@@ -225,3 +225,24 @@ test('secret removal requires explicit confirmation', async()=>{
   await p.element('secret-remove').onclick();
   assert.equal(p.calls.filter(([url])=>url==='/api/secrets').length,0);
 });
+
+for (const [state,running,error,failed,kind,label] of [
+  ['VALIDATING',true,'Schema repair failed',[], 'recovery','Recovery in progress:'],
+  ['ESCALATING',true,'Test failure',[], 'recovery','Recovery in progress:'],
+  ['PAUSED',false,'Context exhausted',[], 'stopped','Project stopped'],
+  ['FAILED',false,'Unrecoverable error',[], 'stopped','Project stopped'],
+  ['READY',false,'No eligible tasks',[], 'stopped','Project stopped'],
+  ['WORKING',true,null,['OLD'], 'recovery','Failure history:'],
+  ['COMPLETED',false,null,['OLD'], 'recovery','Failure history:'],
+  ['WORKING',true,null,[], 'hidden',''],
+]) {
+  test(`monitor error severity ${state} ${error || failed.length}`,async()=>{
+    const p=page(); const original=p.context.fetch;
+    p.context.fetch=async(url,options)=>url.startsWith('/api/monitor') ? {
+      ok:true,json:async()=>({project:{name:'Demo',state,last_error:error},steps:[],failed,workload:{running}})
+    } : original(url,options);
+    await vm.runInContext('refreshMonitor()',p.context);
+    assert.equal(p.element('fail-banner').className,'banner '+kind);
+    assert.ok(p.element('fail-banner').textContent.startsWith(label));
+  });
+}

@@ -95,12 +95,14 @@
     .banner {
       background: #3a1c22;
       border: 1px solid var(--fail);
-      color: #ffd0d5;
+      color: #ffffff;
       padding: 10px 12px;
       border-radius: 8px;
       margin-bottom: 16px;
       white-space: pre-wrap;
     }
+    .banner.recovery { background: #463d23; border-color: #8c7947; color: #ffffff; }
+    .banner.stopped { background: #482b30; border-color: #94616a; color: #ffffff; }
     .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
     .chip {
       font-size: 12px;
@@ -904,13 +906,23 @@
       $("project-events").classList.toggle("hidden", !(data.unscoped_events || []).length);
       const failed = data.failed || [];
       const banner = $("fail-banner");
-      if (failed.length || data.project.last_error) {
-        banner.classList.remove("hidden");
-        banner.textContent = data.project.last_error
-          ? ("Project error: " + data.project.last_error)
-          : (failed.length + " failed step(s) expanded below with full workflow.");
+      const error = data.project.last_error;
+      const state = data.project.state;
+      const stopped = ["PAUSED", "FAILED"].includes(state) || data.workload?.running === false;
+      if (error) {
+        banner.className = "banner " + (stopped ? "stopped" : "recovery");
+        const label = stopped ? "Project stopped — action required: " :
+          data.workload?.running === true ? "Recovery in progress: " : "Recovery warning: ";
+        banner.textContent = label + error + (stopped
+          ? "\nReview the error before resuming or restarting."
+          : "\nMobyAI can attempt recovery; this does not by itself mean the project has stopped.");
+      } else if (failed.length) {
+        banner.className = "banner recovery";
+        banner.textContent = "Failure history: " + failed.length +
+          " step(s) have recorded failed attempts. See the current task statuses below; earlier failures do not by themselves stop the project.";
       } else {
-        banner.classList.add("hidden");
+        banner.className = "banner hidden";
+        banner.textContent = "";
       }
       $("chips").innerHTML = (data.steps || []).map(step => {
         const kind = statusClass(step.status);

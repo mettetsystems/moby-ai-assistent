@@ -279,8 +279,10 @@ class Workloads:
         running = self.project_id == project_id and self.process is not None and self.process.returncode is None
         inactive = not self._busy() and state is not None and state not in {
             'WORKING', 'DISPATCHING', 'VALIDATING', 'PLANNING', 'REPLANNING'}
-        inactive = inactive and not project_is_running(self.runtime.config.persistence.database_path, project_id)
-        return {"relocation": self.relocation if self.relocation and self.relocation["project_id"] == project_id else None,
+        leased = project_is_running(self.runtime.config.persistence.database_path, project_id)
+        inactive = inactive and not leased
+        return {"running": bool(running or leased),
+                "relocation": self.relocation if self.relocation and self.relocation["project_id"] == project_id else None,
                 "can_resume": inactive and state not in {'COMPLETED', 'FAILED'},
                 "can_delete": inactive, "can_restart": inactive, "can_change_target": inactive,
                 "can_stop": running and not (self.stop_task and not self.stop_task.done()),

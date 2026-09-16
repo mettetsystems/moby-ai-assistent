@@ -132,9 +132,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     init = sub.add_parser("init", help="Create config/database and optionally a project")
     init.add_argument("--name", help="Project name")
-    init.add_argument("--objective", help="Coding objective for a new project")
+    prompt = init.add_mutually_exclusive_group()
+    prompt.add_argument("--objective", help="Coding objective for a new project")
+    prompt.add_argument("--prompt-file", help="UTF-8 text file containing the full objective")
     init.add_argument("--id", dest="project_id", help="Explicit project id")
-    init.add_argument("--workspace", help="Project workspace directory")
+    init.add_argument("--workspace", "--target-directory", dest="workspace", help="Project target directory on this host")
 
     sub.add_parser("doctor", help="Check config, database, endpoints, and GPUs")
     sub.add_parser("start", help="Healthcheck or start configured inference services")
@@ -142,6 +144,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     run = sub.add_parser("run", help="Plan if needed, then execute the project")
     run.add_argument("project")
     run.add_argument("--max-steps", type=int, default=None)
+    run.add_argument("-v", "--verbose", action="count", default=0)
 
     report = sub.add_parser("report", help="Generate a reasoning logic report without running coding tasks")
     report.add_argument("project")
@@ -155,6 +158,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     resume = sub.add_parser("resume", help="Reload from disk and continue")
     resume.add_argument("project")
     resume.add_argument("--max-steps", type=int, default=None)
+    resume.add_argument("-v", "--verbose", action="count", default=0)
 
     stop = sub.add_parser("stop", help="Pause the project and stop managed servers")
     stop.add_argument("project")
@@ -167,6 +171,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     logs.add_argument("--task", help="Task id whose attempt log to print")
     logs.add_argument("--limit", type=int, default=50)
 
+    delete = sub.add_parser("delete", help="Delete project records; preserve workspace files")
+    delete.add_argument("project")
+    delete.add_argument("--confirm", required=True, help="Repeat the exact project ID")
+    monitor = sub.add_parser("monitor", help="Monitor a project from the terminal")
+    monitor.add_argument("project")
+    monitor.add_argument("-v", "--verbose", action="count", default=0)
+    monitor.add_argument("--follow", "-f", action="store_true", help="Poll until execution stops; Ctrl+C exits the monitor only")
+    secrets = sub.add_parser("secrets", help="Manage local vault tokens without printing values")
+    secret_commands = secrets.add_subparsers(dest="secret_command", required=True)
+    secret_commands.add_parser("list", help="Show provider names and configuration status only")
+    from mobyai.vault import CATALOG
+    secret_set = secret_commands.add_parser("set", help="Save a token using hidden input or a file")
+    secret_set.add_argument("provider", choices=sorted(CATALOG))
+    secret_set.add_argument("--file", help="Read UTF-8 token from a file; use - for stdin")
+    secret_remove = secret_commands.add_parser("remove", help="Remove a saved token")
+    secret_remove.add_argument("provider", choices=sorted(CATALOG))
+    secret_remove.add_argument("--confirm", required=True, help="Repeat the provider ID")
     sub.add_parser("models", help="Show configured models and devices")
 
     ui = sub.add_parser("ui", help="Settings and monitor console in the browser")
@@ -265,6 +286,9 @@ async def _dispatch(
     runtime: Runtime | None,
     runtime_factory: RuntimeFactory,
 ) -> int:
+    if args.command == "secrets":
+        from mobyai.cli_operations import manage_secrets
+        return manage_secrets(args, stdout, stdin)
     if args.command == "setup":
         return _cmd_setup(args, stdout, stdin)
     if args.command == "config" and args.config_command == "validate":
@@ -273,6 +297,17 @@ async def _dispatch(
         _print_models(_load_config(args.config), stdout)
         return 0
     if args.command == "init":
+        if args.prompt_file:
+            try:
+                with Path(args.prompt_file).expanduser().open("rb") as source:
+                    raw = source.read(1_048_577)
+                if len(raw) > 1_048_576:
+                    raise CliError("Prompt file exceeds 1 MiB")
+                args.objective = raw.decode("utf-8-sig")
+            except (OSError, UnicodeError) as exc:
+                raise CliError(f"Cannot read prompt file: {exc}") from exc
+            if not args.objective.strip():
+                raise CliError("Prompt file must not be empty")
         return await _cmd_init(args, stdout, runtime, runtime_factory)
 
     session = runtime
@@ -281,7 +316,10 @@ async def _dispatch(
         session = runtime_factory(_load_config(args.config))
     try:
         await session.initialize()
+        from mobyai.cli_operations import monitor, delete_project, with_monitor
         handlers = {
+            "monitor": lambda: monitor(session, args.project, stdout, verbosity=args.verbose, follow=args.follow),
+            "delete": lambda: delete_project(session, args.project, args.confirm, stdout),
             "doctor": lambda: _cmd_doctor(session, stdout),
             "start": lambda: _cmd_start(session, stdout),
             "run": lambda: _cmd_run(
@@ -310,6 +348,8 @@ async def _dispatch(
         handler = handlers.get(args.command)
         if handler is None:
             raise CliError(f"Unknown command: {args.command}", code=2)
+        if args.command in {"run", "resume"} and args.verbose:
+            return await with_monitor(session, args.project, stdout, args.verbose, handler)
         return await handler()
     finally:
         if owns_session:
@@ -434,6 +474,7 @@ async def _create_project(runtime: Runtime, args: argparse.Namespace) -> Project
         if args.workspace
         else runtime.config.project.workspace_root / project_id
     )
+    workspace = workspace.resolve()
     workspace.mkdir(parents=True, exist_ok=True)
     now = datetime.now(UTC)
     project = Project(
@@ -659,15 +700,24 @@ async def _execute_project(runtime, project, stdout, *, max_steps):
                 project = ProjectStateMachine.resume(project)
                 await runtime.store.projects.save(project)
                 print(f"resumed to {project.state.value}", file=stdout)
+            execution_started = datetime.now(UTC)
             track_time = project.state not in {ProjectState.COMPLETED, ProjectState.FAILED}
             if track_time:
                 await runtime.store.events.append(EventRecord(
-                    timestamp=datetime.now(UTC), project_id=project.project_id,
+                    timestamp=execution_started, project_id=project.project_id,
                     component="runtime", event="execution_started",
                 ))
             try:
                 async with keep_awake(enabled=track_time and runtime.config.runtime.keep_awake, stdout=stdout):
-                    return await _execute_project_inner(runtime, project, stdout, max_steps=max_steps)
+                    from mobyai.cli_operations import run_with_pause, PauseRequested
+                    try:
+                        return await run_with_pause(runtime, project.project_id,
+                            lambda: _execute_project_inner(runtime, project, stdout, max_steps=max_steps),
+                            started=execution_started)
+                    except PauseRequested:
+                        await pause_interrupted(runtime.store, project.project_id)
+                        print(f"{project.project_id} PAUSED", file=stdout, flush=True)
+                        return 0
             except asyncio.CancelledError:
                 await pause_interrupted(runtime.store, project.project_id)
                 raise
@@ -851,14 +901,20 @@ async def _cmd_status(runtime: Runtime, project_id: str | None, stdout: TextIO) 
 
 
 async def _cmd_pause(runtime: Runtime, project_id: str, stdout: TextIO) -> int:
-    project = await _require_project(runtime, project_id)
+    from mobyai.engine.lease import project_lease, ProjectBusyError
+    from mobyai.engine.stopping import pause_interrupted
+    await _require_project(runtime, project_id)
     try:
-        paused = ProjectStateMachine.pause(project)
-    except InvalidTransitionError as exc:
-        raise CliError(str(exc)) from exc
-    await runtime.store.projects.save(paused)
-    origin = paused.paused_from.value if paused.paused_from else "-"
-    print(f"{paused.project_id} PAUSED (from {origin})", file=stdout)
+        with project_lease(runtime.config.persistence.database_path, project_id):
+            paused = await pause_interrupted(runtime.store, project_id)
+            if paused.state is not ProjectState.PAUSED:
+                raise CliError(f"Cannot pause a {paused.state.value} project")
+            origin = paused.paused_from.value if paused.paused_from else "-"
+            print(f"{paused.project_id} PAUSED (from {origin})", file=stdout)
+    except ProjectBusyError:
+        await runtime.store.events.append(EventRecord(timestamp=datetime.now(UTC),
+            project_id=project_id, component="cli", event="pause_requested"))
+        print(f"{project_id}: pause requested; use monitor to confirm PAUSED", file=stdout)
     return 0
 
 

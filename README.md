@@ -659,3 +659,70 @@ References: [Tree-sitter Python API](https://github.com/tree-sitter/py-tree-sitt
 
 Restart the **idle** console after upgrading to load the new backend routes. No
 existing projects need to be deleted or set up again.
+
+
+## Running coding jobs over SSH
+
+Run these commands **on the MobyAI host**, after connecting through SSH. Prompt
+files and target directories refer to that host. Use absolute paths with the
+startup wrapper, which changes into the repository directory.
+
+```bash
+# Create a project without starting it. The prompt is a UTF-8 text file (max 1 MiB).
+~/moby-ai-assistent/scripts/start.sh init --name my-job --id my-job \
+  --prompt-file /home/ojoseph/prompts/job.txt \
+  --target-directory /home/ojoseph/MobyAI/projects/my-job
+
+# Run with top-level progress; -vv adds recent current-step tool/error events.
+~/moby-ai-assistent/scripts/start.sh run my-job -v
+
+# In a second SSH terminal: view once, or follow until the execution stops.
+~/moby-ai-assistent/scripts/start.sh status
+~/moby-ai-assistent/scripts/start.sh monitor my-job -vv --follow
+~/moby-ai-assistent/scripts/start.sh pause my-job
+~/moby-ai-assistent/scripts/start.sh resume my-job -vv
+
+# Delete saved project records, preserving the target directory and files.
+~/moby-ai-assistent/scripts/start.sh delete my-job --confirm my-job
+```
+
+`--workspace` remains an alias for `--target-directory`. This sets the workspace
+at project creation; it does not relocate an existing project's files. Plain
+`run` retains its existing concise output. `-v` shows state, progress, and current
+step; `-vv` includes recent current-step events and tool results. These flags work
+on `run`, `resume`, and `monitor`. Ctrl+C in a separate monitor exits only that
+monitor. The monitor reads saved events, not live token streams or hidden model
+reasoning.
+
+Use a persistent terminal session such as `tmux` for jobs that must survive an SSH
+disconnection: start `tmux new -s moby`, run the command, and detach with Ctrl+B,
+then D. Reconnect with `tmux attach -t moby`. Jobs otherwise remain foreground
+processes; the CLI does not silently create a background service.
+
+`pause` requests cancellation from an active runner, which cleans up its current
+operation and saves a resumable state. Wait for `PAUSED` before resuming. A task
+interrupted mid-operation is retried using its existing workspace. Already-running
+processes must be restarted to load this pause support. No model fine-tuning
+backend is included; these commands run coding jobs.
+
+### Tokens over SSH
+
+```bash
+# Hidden terminal prompt: the value is not a command-line argument.
+~/moby-ai-assistent/scripts/start.sh secrets set huggingface
+# Alternatively read a protected UTF-8 token file, or use --file - for stdin.
+~/moby-ai-assistent/scripts/start.sh secrets set brave --file /secure/path/brave-token
+~/moby-ai-assistent/scripts/start.sh secrets list
+~/moby-ai-assistent/scripts/start.sh secrets remove brave --confirm brave
+```
+
+Secrets use the same local Secret Service vault as the UI. The SSH session must
+have access to your user's session D-Bus and an unlocked keyring. If the session
+bus address is missing but your user bus is running, it can be selected with
+`export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"`.
+A locked or unavailable vault produces an error; there is no plaintext fallback.
+The commands accept single API tokens, not JSON credentials or SSH private keys,
+and never offer a command to display saved values. `secrets list` explains which
+providers are integrated and which are storage-only; storing a token does not
+automatically grant agents access to it. Existing environment/file credentials
+retain their precedence.
