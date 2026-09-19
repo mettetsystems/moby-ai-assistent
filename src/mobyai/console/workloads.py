@@ -130,6 +130,21 @@ class Workloads:
         await self.event(project.project_id,'existing_codebase_imported',{'mode':'native' if native else 'external'})
         return await self._launch(project,'run')
 
+    async def edit_plan(self, payload):
+        from mobyai.review import editing
+        async with self.lock:
+            project = await self._project(payload)
+            self._assert_stopped(project)
+            with project_lease(self.runtime.config.persistence.database_path, project.project_id):
+                with workspace_lease(self.runtime.config.persistence.database_path, project.workspace_root):
+                    project = await self._project(payload)
+                    self._assert_stopped(project)
+                    if payload.get('action') == 'load':
+                        return await editing.snapshot(self.runtime.store, project)
+                    if payload.get('action') != 'save':
+                        raise ValueError('Choose load or save')
+                    return await editing.save(self.runtime, project, payload)
+
     async def approve_plan(self, payload):
         from mobyai.review.service import approve
         async with self.lock:
@@ -204,6 +219,15 @@ class Workloads:
             await self.event(project.project_id, 'resume_requested', {})
             return await self._launch(project, 'resume')
 
+    async def approve_timeout(self, payload):
+        from mobyai.engine.timeouts import approve_limit
+        async with self.lock:
+            project = await self._project(payload)
+            self._assert_stopped(project)
+            return await approve_limit(self.runtime.store,
+                self.runtime.config.persistence.database_path, project.project_id,
+                payload.get("seconds"), payload.get("confirmation"), source="ui")
+
     async def delete(self, payload):
         async with self.lock:
             project = await self._project(payload)
@@ -273,6 +297,18 @@ class Workloads:
 
     async def watch(self, process, project_id):
         code = await process.wait()
+        # A failed child may leave WORKING in the database. Reconcile only after
+        # exit and while holding both leases; never pause a replacement worker.
+        from mobyai.engine.lease import ProjectBusyError
+        from mobyai.engine.stopping import pause_interrupted
+        try:
+            with project_lease(self.runtime.config.persistence.database_path, project_id):
+                project = await self.runtime.store.projects.get(project_id)
+                if project is not None:
+                    with workspace_lease(self.runtime.config.persistence.database_path, project.workspace_root):
+                        await pause_interrupted(self.runtime.store, project_id)
+        except ProjectBusyError:
+            pass  # A new owner is responsible for its own lifecycle.
         await self.event(project_id, 'workload_exited', {'exit_code': code})
 
     def status(self, project_id, state=None):

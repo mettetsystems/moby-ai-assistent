@@ -66,8 +66,10 @@ async def plan_project(
         if services is not None:
             await services.ensure_role_available(AgentRole.PLANNER)
         from mobyai.review.service import plan_context
+        from mobyai.engine.environment import planning_environment
+        environment = await planning_environment(store, project.project_id, workspace, now=timestamp)
         plan = await agent.create_plan(
-            project.objective + (plan_context(project) if workspace is not None else "") + ("\nPrevious planning validation error to correct:\n" + project.last_error if (project.last_error or "").startswith("Planner recovery:") else ""),
+            project.objective + environment + (plan_context(project) if workspace is not None else "") + ("\nPrevious planning validation error to correct:\n" + project.last_error if (project.last_error or "").startswith("Planner recovery:") else ""),
             project_name=project.name,
             existing_paths=existing_paths,
             inspector=_inspector(workspace),

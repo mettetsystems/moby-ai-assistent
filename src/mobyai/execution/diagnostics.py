@@ -15,6 +15,10 @@ def diagnose(text: str) -> FailureDiagnosis:
     lower = text.lower()
     if any(x in lower for x in ('context budget exhausted','context length','context window')):
         return FailureDiagnosis('context_capacity', 'Required context exceeds capacity. Preserve progress and reduce or compact context before resuming.', False)
+    if 'timeout approval required' in lower:
+        return FailureDiagnosis('timeout_approval', 'The operation reached its approved time limit. Pause for operator review.', False)
+    if any(x in lower for x in ('command timed out', 'harness tests timed out', 'timed_out: true')):
+        return FailureDiagnosis('timeout', 'Inspect progress, hangs and interactive prompts. The harness increases the same operation timeout in bounded steps. Split the work if needed and preserve validation. Do not change sampling or disable tests to hide a timeout.', False, True)
     if 'missing script:' in lower:
         return FailureDiagnosis("npm_missing_script", "Inspect package.json scripts in the command's working directory and the actual test files. Add the missing script targeting real tests, or correct the planned command to an existing equivalent. Do not use --if-present, a no-op test, or merely rename the task. Verify the exact harness command before claiming completion.")
     if any(x in lower for x in ('eresolve', 'unable to resolve dependency tree')):

@@ -387,11 +387,16 @@ Read [`README.md`](../README.md) for day-to-day commands after this file is done
 ## Long model responses
 
 `runtime.inference_timeout_seconds` defaults to `600` (10 minutes) for all agent roles.
-The current client waits for a complete, non-streamed response, so a model can be
-actively generating while the client waits. Increase this setting if legitimate
-responses need more time. This is an HTTP timeout per attempt; transport retries
-can make the total wait longer. It does not change command execution timeouts.
+The client waits for a complete, non-streamed response, so a model can be actively
+producing tokens while the client waits. Coding-job recovery starts at at least
+600 seconds and increases timed-out operations through 750, 900, 1000, 1200, 1500,
+and 1800 seconds. Larger configured baselines skip smaller steps, but YAML alone
+cannot authorize an operation exceeding 1800 seconds.
 
-Existing installations should set this value in their active configuration file;
-an explicitly configured shorter timeout still takes precedence over the default.
+Timeout history persists across resumes and replans. Inference attempts have an
+overall deadline; successive attempts can make total elapsed time longer. Command
+and inference operations maintain separate budgets. At the ceiling, the project
+pauses. See [Automatic timeout recovery](../README.md#automatic-timeout-recovery)
+for the explicit `approve-timeout` command and recovery details.
+
 Restart MobyAI after the current run is idle to apply the change.

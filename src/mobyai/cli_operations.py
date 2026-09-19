@@ -150,3 +150,15 @@ def manage_secrets(args, stdout, stdin):
         return 0
     except VaultError as exc:
         raise CliError(str(exc)) from None
+
+
+async def approve_timeout(runtime, project_id, seconds, confirmation, stdout):
+    from mobyai.cli import CliError
+    from mobyai.engine.timeouts import approve_limit
+    try:
+        await approve_limit(runtime.store, runtime.config.persistence.database_path,
+                            project_id, seconds, confirmation, source="cli")
+    except ValueError as exc:
+        raise CliError(str(exc)) from exc
+    print(f'{project_id}: approved {seconds} seconds per operation. Resume explicitly to continue.', file=stdout)
+    return 0

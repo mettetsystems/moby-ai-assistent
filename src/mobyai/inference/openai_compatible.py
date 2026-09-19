@@ -24,6 +24,9 @@ class OpenAICompatibleProvider:
         max_transport_retries: int = 2,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        self.stream_responses = False
+        self.stream_idle_timeout_seconds = 120
+        self.timeout_seconds = timeout_seconds
         self.endpoint = endpoint.rstrip("/")
         self.model = model
         self.max_transport_retries = max(0, min(max_transport_retries, 5))
@@ -46,7 +49,10 @@ class OpenAICompatibleProvider:
             payload["top_k"] = request.top_k
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
-        if request.json_mode:
+        if request.response_schema is not None:
+            payload["response_format"] = {"type": "json_schema", "json_schema": {
+                "name": request.response_schema_name, "schema": request.response_schema}}
+        elif request.json_mode:
             payload["response_format"] = {"type": "json_object"}
         try:
             response = await self._post(payload)
@@ -55,6 +61,8 @@ class OpenAICompatibleProvider:
                 f"Inference request failed for model {self.model} at {self.endpoint}: "
                 f"{type(exc).__name__}: {str(exc) or 'no response received'}"
             ) from exc
+        if response.status_code in {400, 422} and request.response_schema is not None:
+            raise InferenceError("Server rejected schema-constrained output. Verify server/schema support or set this role's structured_output to json; local validation remains enabled.")
         if response.status_code >= 400:
             snippet = response.text[:500]
             raise InferenceError(
@@ -67,12 +75,37 @@ class OpenAICompatibleProvider:
         return _parse_chat_completion(body, fallback_model=self.model)
 
     async def _post(self, payload):
+        from mobyai.engine.timeouts import current_policy, operation_key
+        policy = current_policy()
+        key = operation_key("inference", [self.endpoint, self.model])
+        while True:
+            seconds = policy.budget(key, self.timeout_seconds) if policy else min(self.timeout_seconds, 1800)
+            try:
+                async with asyncio.timeout(seconds):
+                    return await self._post_attempt(payload, seconds)
+            except (httpx.ReadTimeout, TimeoutError):
+                if policy is None:
+                    raise httpx.ReadTimeout(f"No complete inference response within {seconds} seconds") from None
+                await policy.timed_out(key, seconds, f"inference: {self.model}")
+                # Retry the same read-only generation, without changing sampling.
+
+    async def _post_attempt(self, payload, timeout_seconds):
         for attempt in range(self.max_transport_retries + 1):
             with span("inference.http", attempt=attempt + 1) as active:
                 try:
-                    response = await self._client.post(
-                        join_url(self.endpoint, "/v1/chat/completions"), json=payload)
+                    if self.stream_responses:
+                        from mobyai.inference.streaming import stream_completion
+                        response = await stream_completion(self._client,
+                            join_url(self.endpoint, "/v1/chat/completions"), payload,
+                            timeout_seconds=timeout_seconds,
+                            idle_seconds=self.stream_idle_timeout_seconds)
+                    else:
+                        response = await self._client.post(
+                            join_url(self.endpoint, "/v1/chat/completions"), json=payload,
+                            timeout=timeout_seconds)
                     attribute(active, "http.status_code", response.status_code)
+                except httpx.ReadTimeout:
+                    raise
                 except (httpx.TransportError,) as exc:
                     attribute(active, "error.type", type(exc).__name__)
                     if attempt >= self.max_transport_retries:

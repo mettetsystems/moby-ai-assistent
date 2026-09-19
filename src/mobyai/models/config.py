@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -48,6 +50,11 @@ class RoleModelConfig(_StrictModel):
     model: str
     gpu: int | None = None
     endpoint: str
+    structured_output: Literal["json", "json_schema"] = "json"
+    stream_responses: bool = False
+    stream_idle_timeout_seconds: int = Field(default=120, ge=1)
+    refresh_worker_context: bool = False
+    compact_worker_history: bool = False
     quantization: str | None = None
     kv_cache_dtype: str | None = None
     inference: InferenceParams | None = None

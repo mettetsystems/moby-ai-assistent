@@ -178,6 +178,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     monitor.add_argument("project")
     monitor.add_argument("-v", "--verbose", action="count", default=0)
     monitor.add_argument("--follow", "-f", action="store_true", help="Poll until execution stops; Ctrl+C exits the monitor only")
+    approval = sub.add_parser("approve-timeout", help="Explicitly approve a project operation timeout above 30 minutes")
+    approval.add_argument("project")
+    approval.add_argument("--seconds", type=int, required=True)
+    approval.add_argument("--confirm", required=True, help="Repeat the project ID")
     secrets = sub.add_parser("secrets", help="Manage local vault tokens without printing values")
     secret_commands = secrets.add_subparsers(dest="secret_command", required=True)
     secret_commands.add_parser("list", help="Show provider names and configuration status only")
@@ -316,8 +320,9 @@ async def _dispatch(
         session = runtime_factory(_load_config(args.config))
     try:
         await session.initialize()
-        from mobyai.cli_operations import monitor, delete_project, with_monitor
+        from mobyai.cli_operations import monitor, delete_project, with_monitor, approve_timeout
         handlers = {
+            "approve-timeout": lambda: approve_timeout(session, args.project, args.seconds, args.confirm, stdout),
             "monitor": lambda: monitor(session, args.project, stdout, verbosity=args.verbose, follow=args.follow),
             "delete": lambda: delete_project(session, args.project, args.confirm, stdout),
             "doctor": lambda: _cmd_doctor(session, stdout),
@@ -700,6 +705,8 @@ async def _execute_project(runtime, project, stdout, *, max_steps):
                 project = ProjectStateMachine.resume(project)
                 await runtime.store.projects.save(project)
                 print(f"resumed to {project.state.value}", file=stdout)
+            from mobyai.engine.timeouts import TimeoutPolicy, TimeoutApprovalRequired
+            timeout_policy = await TimeoutPolicy(runtime.store, project.project_id).load()
             execution_started = datetime.now(UTC)
             track_time = project.state not in {ProjectState.COMPLETED, ProjectState.FAILED}
             if track_time:
@@ -711,13 +718,20 @@ async def _execute_project(runtime, project, stdout, *, max_steps):
                 async with keep_awake(enabled=track_time and runtime.config.runtime.keep_awake, stdout=stdout):
                     from mobyai.cli_operations import run_with_pause, PauseRequested
                     try:
-                        return await run_with_pause(runtime, project.project_id,
-                            lambda: _execute_project_inner(runtime, project, stdout, max_steps=max_steps),
-                            started=execution_started)
+                        with timeout_policy.activate():
+                            return await run_with_pause(runtime, project.project_id,
+                                lambda: _execute_project_inner(runtime, project, stdout, max_steps=max_steps),
+                                started=execution_started)
                     except PauseRequested:
                         await pause_interrupted(runtime.store, project.project_id)
                         print(f"{project.project_id} PAUSED", file=stdout, flush=True)
                         return 0
+            except TimeoutApprovalRequired as exc:
+                current = await _require_project(runtime, project.project_id)
+                await runtime.store.projects.save(current.model_copy(update={"last_error": str(exc)}))
+                await pause_interrupted(runtime.store, project.project_id)
+                print(f"{project.project_id} PAUSED: {exc}", file=stdout, flush=True)
+                return 0
             except asyncio.CancelledError:
                 await pause_interrupted(runtime.store, project.project_id)
                 raise

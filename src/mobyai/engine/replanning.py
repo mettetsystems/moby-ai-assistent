@@ -75,6 +75,11 @@ async def replan_project(
     loaded = package or await load_escalation_package(
         store, project.project_id, task_id=project.current_task_id
     )
+    from mobyai.engine.timeouts import current_policy
+    policy = current_policy()
+    if policy is not None:
+        loaded = loaded.model_copy(update={"decision_summary":
+            (loaded.decision_summary or "") + "\n" + policy.planner_context()})
     if (project.last_error or '').startswith('Planner recovery:'):
         loaded = loaded.model_copy(update={'decision_summary':(loaded.decision_summary or '') + '\nCorrect the previous replan validation error: ' + project.last_error})
     tasks = await store.tasks.list_for_project(project.project_id)
@@ -83,15 +88,23 @@ async def replan_project(
             or loaded.failed_task.task_id != failed.task_id
             or loaded.failed_task.attempt_count != failed.attempt_count):
         raise ReplanError("Escalation package does not match the current failed task attempt")
+    history = await store.events.list_for_project(project.project_id)
+    recovery_records = [event.payload for event in history if event.event == "recovery_evidence"][-4:]
+    if recovery_records:
+        import json
+        loaded = loaded.model_copy(update={"decision_summary": (loaded.decision_summary or "") +
+            "\nRECOVERY EVIDENCE (retain validation; change failed hypotheses): " + json.dumps(recovery_records)})
     existing_paths = await _existing_paths(workspace)
     module_contracts = await _module_contract_listings(store, project.project_id, workspace)
     try:
         if services is not None:
             await services.ensure_role_available(AgentRole.PLANNER)
         from mobyai.research.access import research_access
+        from mobyai.engine.environment import planning_environment
+        environment = await planning_environment(store, project.project_id, workspace, now=timestamp)
         with research_access(loaded.failed_task.attempt_count >= 2 and '[RESEARCH_REQUIRED]' in (loaded.decision_summary or '')):
             patch = await agent.replan(
-                objective=project.objective,
+                objective=project.objective + environment,
                 project_name=project.name,
                 tasks=tasks,
                 package=loaded,

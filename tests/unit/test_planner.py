@@ -123,7 +123,8 @@ async def test_plan_project_persists_ready_dag(tmp_path: Path) -> None:
     assert (workspace.root / "src").is_dir()
     assert (workspace.root / "tests").is_dir()
     events = await store.events.list_for_project("proj-1")
-    assert events[0].event == "plan_created"
+    assert events[0].event == "environment_preflight"
+    assert events[-1].event == "plan_created"
 
 
 async def test_plan_project_includes_existing_tree_in_prompt(tmp_path: Path) -> None:

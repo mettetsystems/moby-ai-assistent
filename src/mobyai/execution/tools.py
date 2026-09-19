@@ -5,6 +5,7 @@ from __future__ import annotations
 from mobyai.tracing import traced
 
 import json
+from hashlib import sha256
 import shlex
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -49,6 +50,7 @@ class ToolOutcome(BaseModel):
     exit_code: int | None = None
     timed_out: bool = False
     source_path: str | None = None
+    source_sha256: str | None = None
     start_line: int | None = None
     end_line: int | None = None
     total_lines: int | None = None
@@ -117,6 +119,9 @@ class ToolDispatcher:
     async def _dispatch(
         self, name: WorkerToolName, arguments: Mapping[str, Any]
     ) -> ToolOutcome:
+        from mobyai.execution.tool_contracts import SCHEMAS
+        if name.value in SCHEMAS:
+            SCHEMAS[name.value].model_validate(dict(arguments))
         if name is WorkerToolName.READ_FILE:
             path = _require_str(arguments, "path")
             content = await self._filesystem.read_file(path)
@@ -146,6 +151,7 @@ class ToolDispatcher:
                 output, _ = truncate_to_tokens(payload, _OUTPUT_TOKEN_BUDGET - estimate_tokens(_RANGE_HINT))
                 output += _RANGE_HINT
             return ToolOutcome(name=name, ok=True, output=output, source_path=path,
+                source_sha256=sha256(content.encode()).hexdigest(),
                 start_line=first, end_line=max(first - 1, last), total_lines=total,
                 truncated=clipped or first > 1 or last < total)
         if name is WorkerToolName.WRITE_FILE:

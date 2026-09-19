@@ -26,6 +26,7 @@ class PackedFile(BaseModel):
     truncated: bool = False
     missing: bool = False
     from_contract: bool = False
+    source_sha256: str | None = None
 
 
 class WorkerContext(BaseModel):
@@ -89,6 +90,8 @@ class WorkerContext(BaseModel):
             if packed.from_contract:
                 flags.append("contract")
             suffix = f" [{', '.join(flags)}]" if flags else ""
+            if packed.source_sha256:
+                suffix += " [sha256=" + packed.source_sha256 + "]"
             body = packed.content
             sections.append(
                 f"## File {packed.path} ({packed.role.value}){suffix}\n"

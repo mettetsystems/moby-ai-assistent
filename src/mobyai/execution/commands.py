@@ -100,6 +100,10 @@ class CommandRunner:
                     break
                 directory = directory.parent
 
+        from mobyai.engine.timeouts import current_policy, operation_key
+        policy = current_policy()
+        key = operation_key("command", [str(workdir), command])
+        timeout_seconds = policy.budget(key, timeout_seconds) if policy else min(timeout_seconds, 1800)
         stdout_buf = _BoundedBuffer(self.max_output_bytes)
         stderr_buf = _BoundedBuffer(self.max_output_bytes)
         started = time.monotonic()
@@ -135,6 +139,10 @@ class CommandRunner:
                 await process.wait()
             await _finish_drain(process, stdout_buf, stderr_buf)
 
+        if timed_out and policy is not None:
+            next_seconds = await policy.timed_out(key, timeout_seconds, f"command: {Path(command[0]).name}")
+            stderr_buf.feed((f"\nCommand timed out after {timeout_seconds} seconds. "
+                               f"Next attempt permits {next_seconds} seconds. Inspect progress before retrying.\n").encode())
         duration = time.monotonic() - started
         exit_code = process.returncode
         if exit_code is None:

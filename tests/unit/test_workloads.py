@@ -199,3 +199,33 @@ async def test_cli_duplicate_resume_does_not_change_paused_state(tmp_path):
     assert code != 0
     assert 'already running' in errors.getvalue()
     assert (await runtime.store.projects.get(item.project_id)).state == ProjectState.PAUSED
+
+async def test_exited_worker_reconciles_orphan_and_enables_delete(tmp_path):
+    from tests.helpers import make_project
+    from mobyai.models.project import ProjectState
+    path,runtime=_runtime(tmp_path)
+    project=make_project(workspace_root=tmp_path/'workspace').model_copy(update={'state':ProjectState.WORKING,'last_error':'Schema repair failed'})
+    await runtime.store.projects.save(project)
+    workloads=Workloads(runtime,path)
+    process=AsyncMock()
+    process.returncode=1
+    process.wait.return_value=1
+    await workloads.watch(process,project.project_id)
+    saved=await runtime.store.projects.get(project.project_id)
+    assert saved.state==ProjectState.PAUSED
+    assert saved.last_error=='Schema repair failed'
+    assert workloads.status(project.project_id,saved.state)['can_delete']
+
+async def test_exited_worker_does_not_pause_new_owner(tmp_path):
+    from tests.helpers import make_project
+    from mobyai.models.project import ProjectState
+    from mobyai.engine.lease import project_lease
+    path,runtime=_runtime(tmp_path)
+    project=make_project().model_copy(update={'state':ProjectState.WORKING})
+    await runtime.store.projects.save(project)
+    workloads=Workloads(runtime,path)
+    process=AsyncMock()
+    process.wait.return_value=1
+    with project_lease(runtime.config.persistence.database_path,project.project_id):
+        await workloads.watch(process,project.project_id)
+    assert (await runtime.store.projects.get(project.project_id)).state==ProjectState.WORKING

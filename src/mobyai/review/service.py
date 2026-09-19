@@ -23,15 +23,16 @@ async def mode(store, project):
 async def approved(store, project):
     if not await mode(store,project): return True
     events=await store.events.list_for_project(project.project_id)
-    return any(e.event=='review_plan_approved' for e in events)
+    latest = next((e for e in reversed(events) if e.event in {'review_plan_proposed', 'review_plan_approved'}), None)
+    return latest is not None and latest.event == 'review_plan_approved'
 
 async def ensure_approved(store, project):
     if not await mode(store,project): return
     if not await approved(store,project):
         raise ValueError('Human plan approval required in Monitor before executing this existing codebase')
     events=await store.events.list_for_project(project.project_id)
-    if not any(e.event=='review_execution_authorized' for e in events):
-        proposal=minutes.read(minutes.run_dir(project)/'proposal.json')
+    proposal=minutes.read(minutes.run_dir(project)/'proposal.json')
+    if not any(e.event=='review_execution_authorized' and e.payload.get('revision') == proposal['revision'] for e in events):
         if await asyncio.to_thread(graph.fingerprint,project.workspace_root)!=proposal['source_fingerprint']:
             raise ValueError('Codebase changed after approval; review it again before implementation')
         await event(store,project,'review_execution_authorized',{'revision':proposal['revision']})

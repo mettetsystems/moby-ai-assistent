@@ -85,6 +85,14 @@ class StructuredGenerator:
         schema: type[T],
     ) -> T:
         request = self._with_live_settings(request)
+        if self.settings is not None and self.settings.structured_output == "json_schema":
+            schema_json = schema.model_json_schema()
+            request = request.model_copy(update={"response_schema": schema_json,
+                "response_schema_name": schema.__name__,
+                "messages": [*request.messages, ChatMessage(role="user", content=
+                    "Output must match this schema, including any plan/patch wrapper. "
+                    "Choose either nonempty inspect_calls or a completed plan/patch, not an empty object.\n" +
+                    json.dumps(schema_json, ensure_ascii=False))]})
         response = await self._request(request)
         try:
             return parse_structured(response.content, schema)
@@ -157,6 +165,9 @@ class StructuredGenerator:
         endpoint = getattr(provider, "endpoint", None)
         if isinstance(endpoint, str):
             provider.endpoint = self.settings.endpoint.rstrip("/")
+        if hasattr(provider, "stream_responses"):
+            provider.stream_responses = self.settings.stream_responses
+            provider.stream_idle_timeout_seconds = self.settings.stream_idle_timeout_seconds
         if hasattr(provider, "model"):
             provider.model = self.settings.model
         return request.model_copy(

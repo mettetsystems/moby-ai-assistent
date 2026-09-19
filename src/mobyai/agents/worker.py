@@ -15,15 +15,24 @@ class WorkerAgent:
     def __init__(self, generator: StructuredGenerator) -> None:
         self._generator = generator
 
+    @property
+    def refresh_context_enabled(self):
+        return bool(self._generator.settings and self._generator.settings.refresh_worker_context)
+
+    @property
+    def compact_history_enabled(self):
+        return bool(self._generator.settings and self._generator.settings.compact_worker_history)
+
     async def implement(
         self,
         context: WorkerContext,
         *,
         extra_messages: Sequence[ChatMessage] = (),
     ) -> WorkerResult:
+        from mobyai.execution.tool_contracts import tool_guidance
         request = ModelRequest(
             messages=[
-                ChatMessage(role="system", content=SYSTEM_PROMPT),
+                ChatMessage(role="system", content=SYSTEM_PROMPT + "\n" + tool_guidance()),
                 ChatMessage(role="user", content=USER_PROMPT.format(context=context.render())),
                 *extra_messages,
             ]

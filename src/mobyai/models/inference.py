@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -26,6 +26,8 @@ class ModelRequest(BaseModel):
     top_k: int | None = Field(default=None, ge=0)
     max_tokens: int | None = Field(default=None, ge=1)
     json_mode: bool = True
+    response_schema: dict[str, Any] | None = None
+    response_schema_name: str = "result"
 
 
 class ModelResponse(BaseModel):

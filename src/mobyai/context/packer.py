@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from hashlib import sha256
 
 from mobyai.context.errors import ContextLookupError, ContextBudgetError
 from mobyai.context.contracts import contract_is_current
@@ -232,8 +233,8 @@ class ContextPacker:
                 and contracts is not None and path in contracts
                 and contract_is_current(contracts[path], content)):
             return PackedFile(path=path, content=contracts[path].rendered,
-                              role=role, from_contract=True)
-        return PackedFile(path=path, content=content, role=role)
+                              role=role, from_contract=True, source_sha256=sha256(content.encode()).hexdigest())
+        return PackedFile(path=path, content=content, role=role, source_sha256=sha256(content.encode()).hexdigest())
 
     async def _error_from_attempts(
         self, attempts: Sequence[TaskAttempt]
@@ -320,6 +321,8 @@ def _format_file(item: PackedFile) -> str:
     if item.from_contract:
         flags.append("contract")
     suffix = f" [{', '.join(flags)}]" if flags else ""
+    if item.source_sha256:
+        suffix += " [sha256=" + item.source_sha256 + "]"
     return f"## File {item.path} ({item.role.value}){suffix}\n```\n{item.content}\n```"
 
 

@@ -172,6 +172,9 @@ async def execute_task(
             _extend_unique(changed_files, _changed_from(turn_outcomes))
             if worker_result.done or not worker_result.tool_calls:
                 break
+            if getattr(agent, "refresh_context_enabled", False):
+                context = await packer.build_worker_context(project.project_id, task.task_id,
+                    token_budget, remediation_instruction=remediation)
             extra_messages = [
                 *extra_messages,
                 ChatMessage(role="assistant", content=worker_result.model_dump_json()),
@@ -182,6 +185,9 @@ async def execute_task(
                     ),
                 ),
             ]
+            if getattr(agent, "compact_history_enabled", False):
+                from mobyai.context.history import compact_history
+                extra_messages = compact_history(extra_messages)
     except (WorkspaceError, ContextBudgetError) as exc:
         inference_error = inference_error or (("Context budget exhausted: " if isinstance(exc,ContextBudgetError) else "") + str(exc))
 

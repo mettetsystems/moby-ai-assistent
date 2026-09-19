@@ -726,3 +726,136 @@ and never offer a command to display saved values. `secrets list` explains which
 providers are integrated and which are storage-only; storing a token does not
 automatically grant agents access to it. Existing environment/file credentials
 retain their precedence.
+
+
+### Automatic timeout recovery
+
+Coding jobs start with the configured inference/command timeout (600 seconds by
+default), with a minimum automatic starting point of 600 seconds. A timed-out
+operation advances through **600 → 750 → 900 → 1000 → 1200 → 1500 → 1800 seconds**.
+Higher configured starting values skip shorter steps, but an unapproved operation
+is always capped at 1800 seconds. Timeout increases are independent of sampling
+changes, and are saved per project and operation across resumes and replans.
+
+Inference retries keep the same request and sampling settings. Commands are not
+automatically replayed inside the command runner: the worker/recovery process
+reviews the failed attempt and decides the next action with the increased budget.
+The planner receives recent timeout evidence and guidance to distinguish slow
+progress from a hang, split tasks where useful, and preserve acceptance tests.
+A new or changed command has its own timeout history. Authentication, connection
+failures, and missing executables do not automatically earn longer timeouts.
+
+The ceiling is **30 minutes per operation**, not a total project-duration limit.
+An inference attempt has an overall deadline as well as an HTTP timeout. Model
+startup health checks retain their separate settings. If an operation exhausts
+its ceiling, the project pauses with `Timeout approval required`; increasing an
+ordinary YAML timeout alone does not approve going above the ceiling.
+
+In the UI, open **Monitor → Operation timeout approval**. The panel shows the
+current limit. Stop the workload, enter a larger limit in seconds, paste the exact
+project ID, and click **Approve timeout limit**. Approval does not start work;
+click **Resume** separately. The UI and CLI record the same approval policy.
+
+From SSH, `./scripts/start.sh status` lists all project IDs, states, and current
+steps; `./scripts/start.sh status PROJECT_ID` shows one project's details.
+
+Alternatively, explicitly approve a larger project-specific ceiling from the CLI:
+
+```bash
+# Example: allow up to 40 minutes per operation for this project.
+~/moby-ai-assistent/scripts/start.sh approve-timeout my-job --seconds 2400 --confirm my-job
+~/moby-ai-assistent/scripts/start.sh resume my-job -vv
+```
+
+Approval requires an idle project, is recorded as an operator event, and does not
+start work. The approved limit persists for that project. The planner cannot
+approve a higher limit through its plan schema. New projects still use the
+30-minute automatic ceiling. Restart existing runners to load this policy.
+
+
+### Agent reliability improvements and safe rollout
+
+The role prompts now separate inspection/validation from completion, remove
+contradictory worker internet guidance, and generate tool argument guidance from
+shared dispatch contracts. Existing flat planner outputs remain accepted. The
+harness still owns task scheduling, pass/fail checks, stopping, and approvals.
+
+Recovery records contain failure signatures, bounded file fingerprints, prior
+instructions, and validation commands. Repeated identical instructions on unchanged
+observed files require fresh inspection in the next instruction. This is an exact
+repeat guard, not proof that semantically different instructions represent new
+hypotheses. Evidence is sent to the orchestrator and planner without imposing a
+new project retry budget. Missing files are recorded as unavailable.
+
+Packed files and file-read results carry SHA-256 fingerprints of the retrieved
+source. Existing stale-import-contract checks remain in place. Two optional worker
+features refresh packed context after tool turns and compact old successful tool
+retrievals. Compaction preserves the task contract, failures, validation output,
+source/range metadata, and the two latest tool exchanges. It does not claim that
+old summaries are sufficient evidence for editing; agents must reread current files.
+
+The following role options default to the previous behavior. Add them under an
+existing `models.worker`, `models.planner`, or `models.orchestrator` entry as
+appropriate; test **one option at a time** in a separate configuration:
+
+```yaml
+models:
+  worker:
+    # Keep your existing model, provider, endpoint and launch fields.
+    structured_output: json          # opt in with json_schema
+    stream_responses: false          # opt in with true after testing server support
+    stream_idle_timeout_seconds: 120
+    refresh_worker_context: false   # worker only
+    compact_worker_history: false   # worker only
+```
+
+`json_schema` sends the actual Pydantic contract to the inference server; local
+schema and semantic validation still run. A server rejection gives an actionable
+error instead of silently weakening constraints. Set `structured_output: json`
+to return to the existing JSON transport. Your installed server/model combination
+must be verified before enabling this option on long-running projects.
+
+Streaming assembles a complete response before any model action is executed.
+Malformed or prematurely ended streams are discarded; cancellation closes the
+response. Metadata-only progress events distinguish receiving a stream from
+waiting for a finished response. The idle read timeout is separate from the
+operation deadline: an idle connection reports an infrastructure error rather
+than repeatedly increasing an unrelated total deadline. Heartbeats or generated
+tokens are not proof of useful work. Automatic repetition detection is not enabled.
+
+These changes do not migrate project records or alter the current YAML settings.
+Restart idle runners to load code changes. Keep the optional settings disabled to
+retain the previous transport and context-history behavior. Validate with the
+[isolated evaluation baseline](evals/README.md); scripted success demonstrates
+harness correctness, not improved live-model quality. Live comparisons require
+explicit `--live` and an already-running worker endpoint.
+
+
+### Environment-aware planning
+
+Before initial planning and every replan, MobyAI supplies a read-only host preflight:
+OS, architecture, running Python/virtual environment, executable paths, and known
+root manifests. The `environment_preflight` event records the evidence. This does
+not run binaries, read secrets, install dependencies, contact registries, or start
+containers. The planner must distinguish the execution host from the requested
+deployment platform, account for missing prerequisites, and validate compatible
+alternatives such as Podman rather than assume Docker Compose exists. Executable
+presence alone does not establish daemon readiness, Compose plugin support, GPU
+access, or runtime compatibility. Those need targeted validation during execution.
+
+This applies to new plans/replans after restarting the runner. It does not silently
+rewrite an existing saved plan or automatically resume a paused project.
+
+### Edit the initial existing-codebase plan
+
+Before approving the first plan, select the project in **Monitor** and choose
+**Edit initial plan**. Edit task descriptions, acceptance criteria, tests,
+dependencies, or add tasks in the plan JSON, then explain the change and save.
+Existing task IDs must be retained. Review the revised proposal and choose
+**Approve plan and start** when ready. Saving alone does not start execution.
+
+This preserves the same project, workspace, original prompt and review reports.
+Edits are archived in `mobyMinutes/runs/<run>/plan-edits`. The editor becomes
+unavailable after the first approval: subsequent agent-generated plans cannot
+be edited through this feature. Stale edits and invalid task dependencies are
+rejected without changing the saved plan.

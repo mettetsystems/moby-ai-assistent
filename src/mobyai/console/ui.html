@@ -279,8 +279,21 @@
       <p class="hint">Stop applies to workloads launched by this console. It requires confirmation and the project ID, then preserves progress for explicit resume.</p>
       <div class="card" style="margin-bottom:16px">
         <h2>Codebase review and planning history</h2>
+        <button class="btn" id="edit-plan" type="button" disabled>Edit initial plan</button>
         <button class="btn" id="generate-logic-report" type="button" disabled>Generate logic report</button>
         <p id="review-status" class="status" role="status"></p>
+        <section id="plan-editor" class="hidden">
+          <h3>Edit initial plan</h3>
+          <p>Available only before the first approval. Edit the plan JSON below: task descriptions, acceptance criteria, tests, dependencies, or add tasks. Keep existing task IDs and leave passed/superseded tasks unchanged. Saving preserves files and history and requires fresh approval.</p>
+          <pre id="edit-task-statuses"></pre>
+          <label for="edit-plan-json">Plan JSON</label>
+          <textarea id="edit-plan-json" rows="22" style="width:100%;background:var(--bg);color:var(--text)"></textarea>
+          <label for="edit-plan-reason">Why is the plan changing?</label>
+          <textarea id="edit-plan-reason" rows="3" maxlength="4000" style="width:100%;background:var(--bg);color:var(--text)"></textarea>
+          <button id="save-edited-plan" class="btn" type="button">Save revised plan</button>
+          <button id="cancel-plan-edit" class="btn" type="button">Cancel edit</button>
+          <p id="edit-plan-status" role="status"></p>
+        </section>
         <details id="review-report-panel" class="hidden"><summary>Read report</summary><pre id="review-report"></pre></details>
         <div id="plan-approval-panel" class="hidden">
           <h3>Review the proposed plan</h3>
@@ -305,6 +318,17 @@
       <pre id="launch-log" class="hidden" aria-label="Workload output"></pre>
       <pre id="project-events" class="hidden"></pre>
       <div id="fail-banner" class="banner hidden"></div>
+      <div id="timeout-approval-panel" class="card hidden" style="margin-bottom:16px">
+        <h2>Operation timeout approval</h2>
+        <p id="timeout-policy-summary"></p>
+        <p>Allow a longer limit for each operation in this project. Approval is saved and does not resume work; use Resume afterward.</p>
+        <label for="timeout-seconds">Approved limit in seconds (more than 1800)</label>
+        <input id="timeout-seconds" type="number" min="1801" step="1" value="2400"/>
+        <label for="timeout-confirmation">Type or paste the exact project ID to confirm</label>
+        <input id="timeout-confirmation" autocomplete="off" spellcheck="false"/>
+        <button class="btn" id="approve-timeout" type="button" disabled>Approve timeout limit</button>
+        <p id="timeout-approval-status" class="status" role="status"></p>
+      </div>
       <div id="chips" class="chips"></div>
       <div id="steps"></div>
     </section>
@@ -419,6 +443,50 @@
 
     let workloadActionBusy = false;
     let targetProject = null;
+    let timeoutProject = null, timeoutCanApprove = false, timeoutCeiling = null;
+    function updateTimeoutButton() {
+      const seconds = Number($("timeout-seconds").value);
+      $("approve-timeout").disabled = workloadActionBusy || !timeoutCanApprove ||
+        timeoutProject !== $("project").value || !Number.isSafeInteger(seconds) || seconds <= 1800 ||
+        $("timeout-confirmation").value !== timeoutProject;
+    }
+    function renderTimeoutApproval(data, id) {
+      const policy = data.timeout_policy;
+      $("timeout-approval-panel").classList.toggle("hidden", !policy);
+      if (!policy) { timeoutProject = null; timeoutCanApprove = false; updateTimeoutButton(); return; }
+      if (timeoutProject !== id || timeoutCeiling !== policy.ceiling_seconds) {
+        $("timeout-confirmation").value = "";
+        $("timeout-seconds").value = String(Math.max(2400, policy.ceiling_seconds + 600));
+        $("timeout-approval-status").textContent = "";
+      }
+      timeoutProject = id; timeoutCeiling = policy.ceiling_seconds;
+      timeoutCanApprove = data.workload?.running === false &&
+        !["WORKING","DISPATCHING","VALIDATING","PLANNING","REPLANNING"].includes(data.project.state);
+      $("timeout-policy-summary").textContent = "Project " + id + ": current limit " + policy.ceiling_seconds + " seconds per operation." +
+        (policy.approval_required ? " This limit was exhausted; approval is required for longer operations." : "") +
+        (timeoutCanApprove ? "" : " Stop the workload before approving a change.");
+      updateTimeoutButton();
+    }
+    $("timeout-seconds").oninput = updateTimeoutButton;
+    $("timeout-confirmation").oninput = updateTimeoutButton;
+    $("approve-timeout").onclick = async () => {
+      updateTimeoutButton();
+      if ($("approve-timeout").disabled) return;
+      const project = timeoutProject;
+      const seconds = Number($("timeout-seconds").value);
+      workloadActionBusy = true; updateTimeoutButton();
+      try {
+        await apiJson("/api/workloads/approve-timeout", {method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({project_id:project,seconds,confirmation:$("timeout-confirmation").value})});
+        $("timeout-confirmation").value = "";
+        await loadMonitor();
+        if ($("project").value === project) $("timeout-approval-status").textContent =
+          "Approved " + seconds + " seconds per operation. Work remains stopped; select Resume to continue.";
+      } catch (error) {
+        if ($("project").value === project) $("timeout-approval-status").textContent = error.message;
+      } finally { workloadActionBusy = false; updateTimeoutButton(); }
+    };
+
     async function workloadAction(action) {
       if (workloadActionBusy) return;
       const projectId = $("project").value;
@@ -622,8 +690,43 @@
       if (report.reports) lines.push(...(report.limitations || []).map(text=>"Limitation: "+text));
       return lines.join("\n");
     }
+    let planEdit = null;
+    $("edit-plan").onclick = async () => {
+      if (workloadActionBusy) return;
+      const id=$("project").value;
+      workloadActionBusy=true;
+      try {
+        const draft=await apiJson("/api/workloads/edit-plan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({project_id:id,action:"load"})});
+        if ($("project").value !== id) return;
+        planEdit={project:id,version:draft.version};
+        $("edit-plan-json").value=JSON.stringify(draft.plan,null,2);
+        $("edit-task-statuses").textContent=Object.entries(draft.task_statuses).map(([id,status])=>id+": "+status).join("\n");
+        $("edit-plan-reason").value="";
+        $("edit-plan-status").textContent="";
+        $("plan-editor").classList.remove("hidden");
+      } catch(error) { $("review-status").textContent=error.message; }
+      finally { workloadActionBusy=false; }
+    };
+    $("cancel-plan-edit").onclick = () => { planEdit=null; $("plan-editor").classList.add("hidden"); };
+    $("save-edited-plan").onclick = async () => {
+      if (!planEdit || workloadActionBusy || planEdit.project !== $("project").value) return;
+      workloadActionBusy=true;
+      $("save-edited-plan").disabled=true;
+      try {
+        const plan=JSON.parse($("edit-plan-json").value);
+        const result=await apiJson("/api/workloads/edit-plan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({project_id:planEdit.project,version:planEdit.version,action:"save",plan,reason:$("edit-plan-reason").value})});
+        $("review-status").textContent=result.message;
+        $("cancel-plan-edit").onclick();
+        $("plan-reviewed").checked=false;
+      } catch(error) { $("edit-plan-status").textContent=error.message; }
+      finally { workloadActionBusy=false; $("save-edited-plan").disabled=false; }
+      await loadMonitor();
+    };
+
     function renderReview(data,id) {
+      if (planEdit && planEdit.project !== id) $("cancel-plan-edit").onclick();
       const review=data.review || {};
+      $("edit-plan").disabled=!review.proposal || review.proposal.approved || workloadActionBusy || !!data.workload?.can_stop;
       if (review.job_status) $("review-status").textContent=review.job_status;
       const proposal=review.proposal;
       const revision=proposal && !proposal.approved ? proposal.revision : null;
@@ -865,6 +968,7 @@
         $("project-events").classList.add("hidden");
         $("steps").innerHTML = "<p class='hint'>No projects yet. Open New workload to import a prompt and start.</p>";
         $("fail-banner").classList.add("hidden");
+        renderTimeoutApproval({}, null);
         $("chips").innerHTML = "";
         return;
       }
@@ -891,6 +995,7 @@
       $("restart-workload").disabled = workloadActionBusy || !data.workload?.can_restart;
       $("change-target").disabled = workloadActionBusy || !data.workload?.can_change_target;
       renderReview(data, id);
+      renderTimeoutApproval(data, id);
       $("current-target").textContent = data.project.workspace_root || "Not available";
       const relocation = data.workload?.relocation;
       if (relocation) {

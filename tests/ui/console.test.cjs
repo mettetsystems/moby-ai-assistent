@@ -246,3 +246,62 @@ for (const [state,running,error,failed,kind,label] of [
     assert.ok(p.element('fail-banner').textContent.startsWith(label));
   });
 }
+
+test('timeout approval requires exact confirmation and does not resume',async()=>{
+  const p=page();
+  p.context.timeoutData={project:{state:'PAUSED'},workload:{running:false},timeout_policy:{ceiling_seconds:1800,approval_required:true}};
+  vm.runInContext('renderTimeoutApproval(timeoutData,"demo")',p.context);
+  await p.element('approve-timeout').onclick();
+  assert.equal(p.calls.filter(([url])=>url.includes('approve-timeout')).length,0);
+  p.element('timeout-confirmation').value='demo';
+  p.element('timeout-seconds').value='2400';
+  await p.element('approve-timeout').onclick();
+  const call=p.calls.find(([url])=>url.includes('approve-timeout'));
+  assert.deepEqual(JSON.parse(call[1].body),{project_id:'demo',seconds:2400,confirmation:'demo'});
+  assert.equal(p.calls.filter(([url])=>url==='/api/workloads/resume').length,0);
+});
+
+test('timeout confirmation resets on project change and active runs cannot approve',()=>{
+  const p=page();
+  p.context.timeoutData={project:{state:'PAUSED'},workload:{running:false},timeout_policy:{ceiling_seconds:1800}};
+  vm.runInContext('renderTimeoutApproval(timeoutData,"demo")',p.context);
+  p.element('timeout-confirmation').value='demo';
+  p.element('project').value='other';
+  vm.runInContext('renderTimeoutApproval(timeoutData,"other")',p.context);
+  assert.equal(p.element('timeout-confirmation').value,'');
+  p.element('timeout-confirmation').value='other';
+  p.context.timeoutData.workload.running=true;
+  vm.runInContext('renderTimeoutApproval(timeoutData,"other")',p.context);
+  assert.equal(p.element('approve-timeout').disabled,true);
+});
+
+test('initial plan editor is disabled after approval and polling preserves drafts', async()=>{
+  const p=page();
+  p.context.reviewData={review:{proposal:{approved:true,revision:'one',plan:{tasks:[]}}},workload:{}};
+  vm.runInContext('renderReview(reviewData,"demo")',p.context);
+  assert.equal(p.element('edit-plan').disabled,true);
+  p.context.reviewData.review.proposal.approved=false;
+  vm.runInContext('renderReview(reviewData,"demo")',p.context);
+  assert.equal(p.element('edit-plan').disabled,false);
+  p.element('edit-plan-json').value='my unsaved draft';
+  vm.runInContext('renderReview(reviewData,"demo")',p.context);
+  assert.equal(p.element('edit-plan-json').value,'my unsaved draft');
+});
+test('saving initial plan sends draft version without starting a workload', async()=>{
+  const p=page();
+  p.context.fetch=async(url,options)=>{
+    p.calls.push([url,options]);
+    const request=options?.body ? JSON.parse(options.body) : {};
+    const body=url==='/api/workloads/edit-plan' ? (request.action==='load' ? {version:'draft-version',plan:{tasks:[]},task_statuses:{}} : {message:'Saved'}) :
+      url==='/api/projects' ? {projects:[]} : {project:{name:'Demo',state:'PAUSED'},steps:[],failed:[],workload:{}};
+    return {ok:true,text:async()=>JSON.stringify(body)};
+  };
+  await p.element('edit-plan').onclick();
+  p.element('edit-plan-reason').value='Clarify acceptance tests';
+  await p.element('save-edited-plan').onclick();
+  const requests=p.calls.filter(([url])=>url==='/api/workloads/edit-plan').map(([,options])=>JSON.parse(options.body));
+  assert.equal(requests[1].version,'draft-version');
+  assert.equal(requests[1].project_id,'demo');
+  assert.equal(requests[1].reason,'Clarify acceptance tests');
+  assert.equal(p.calls.some(([url])=>/approve-plan|restart|resume/.test(url)),false);
+});

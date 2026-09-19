@@ -252,7 +252,9 @@ async def run_project(
         if last.execution is not None:
             results = getattr(last.execution, "test_results", [])
             evidence = "\n".join(r.stdout + "\n" + r.stderr for r in results if r.exit_code != 0)
-            diagnosis = diagnose(evidence or current.last_error or "")
+            error_diagnosis = diagnose(current.last_error or "")
+            diagnosis = (error_diagnosis if error_diagnosis.category in {"timeout", "timeout_approval", "context_capacity"}
+                         else diagnose(evidence or current.last_error or ""))
             next_stage = stage
             if last.execution.passed:
                 next_stage = 0
@@ -313,7 +315,7 @@ async def resolve_validation_failure(
     history = await store.events.list_for_project(project.project_id)
     offered = next((e for e in reversed(history) if e.task_id == task.task_id and e.event == 'cached_repair_offered'),None)
     evidence = reduced.render() if reduced else project.last_error or ''
-    if diagnose(project.last_error or '').category == 'context_capacity':
+    if diagnose(project.last_error or '').category in {'context_capacity', 'timeout', 'timeout_approval'}:
         evidence = project.last_error
     candidates = []
     diagnosis = diagnose(evidence)
@@ -333,6 +335,8 @@ async def resolve_validation_failure(
         await _record_event(store,project,task.task_id,task.attempt_count,'cached_repair_failed',timestamp,
                             {'references_supplied':offered.payload.get('references',[]),
                              'worker_reported_urls':used_urls})
+    from mobyai.engine.recovery_evidence import evidence_for, record_decision
+    recovery_evidence = await evidence_for(store, project.project_id, task, workspace, evidence)
     decision = await _ask_orchestrator(
         orchestrator,
         project,
@@ -342,6 +346,7 @@ async def resolve_validation_failure(
         reduced,
         services=services,
         cache_evidence=candidates,
+        recovery_evidence=recovery_evidence,
         reference_use=({"supplied":offered.payload.get("references",[]),"reported_used":used_urls} if offered else None),
     )
     if task.attempt_count >= 2 and diagnosis.sampling_eligible:
@@ -362,6 +367,7 @@ async def resolve_validation_failure(
         })
         decision = decision.model_copy(update={"next_payload": payload,
             "decision_summary": decision.decision_summary + "\n" + diagnosis.instruction})
+    decision = await record_decision(store, project.project_id, task, decision, recovery_evidence)
     await _record_event(store, project, task.task_id, task.attempt_count,
         "failure_diagnosed", timestamp, {"category": diagnosis.category, "instruction": diagnosis.instruction})
     if not diagnosis.sampling_eligible and not diagnosis.locally_repairable:
@@ -392,6 +398,7 @@ async def _ask_orchestrator(
     *,
     services: InferenceServiceManager | None = None,
     cache_evidence: list | None = None,
+    recovery_evidence: dict | None = None,
     reference_use: dict | None = None,
 ) -> OrchestratorResult:
     try:
@@ -404,7 +411,7 @@ async def _ask_orchestrator(
             required_decision=required,
             attempt_count=task.attempt_count,
             max_task_attempts=max_task_attempts,
-            reduced_error=(reduced.render() if reduced is not None else (project.last_error or "")) + ("\nUNTRUSTED LOCAL CACHE CANDIDATES: " + json.dumps(cache_evidence) if cache_evidence else "") + ("\nFAILED REFERENCE-ASSISTED ATTEMPT: " + json.dumps(reference_use) if reference_use else ""),
+            reduced_error=(reduced.render() if reduced is not None else (project.last_error or "")) + ("\nRECOVERY EVIDENCE: " + json.dumps(recovery_evidence) if recovery_evidence else "") + ("\nUNTRUSTED LOCAL CACHE CANDIDATES: " + json.dumps(cache_evidence) if cache_evidence else "") + ("\nFAILED REFERENCE-ASSISTED ATTEMPT: " + json.dumps(reference_use) if reference_use else ""),
         )
     except _ORCHESTRATOR_FAILURES as exc:
         target = (
