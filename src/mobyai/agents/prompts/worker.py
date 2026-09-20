@@ -31,11 +31,24 @@ Rules:
   affected region before constructing another patch against its current contents.
 - If a patch reports a context mismatch, rebuild a smaller patch from the fresh
   read. Do not resend the same rejected diff or overwrite unrelated changes.
-- Use failure feedback to choose a concrete repair and a validation command that
-  could confirm it. If the same failure persists, gather new evidence before retrying.
+- Diagnose failures from the exact command, traceback, failing operation, working
+  directory, implementation, and relevant fixtures; an exit code or category label
+  alone does not establish the cause. Check required inputs, tools, and declared
+  dependencies before changing code. Make the smallest evidence-backed repair and
+  rerun the original failing validation. If the same failure persists, inspect fresh
+  evidence and revise the diagnosis before making another edit.
+- Do not change sampling or timeouts to fix a missing file or executable. Report
+  unavailable external inputs and access/runtime blockers with concrete evidence.
 - Preserve requirements and test integrity: no skipped checks, weakened assertions,
   hard-coded test answers, or no-op scripts to manufacture a pass. Correct a faulty
   test only when the requirements or established contract justify the correction.
+- For filesystem test failures, distinguish a missing input on a read from a missing
+  parent directory on a write. Inspect fixtures and the implementation contract to
+  establish who owns creation: application, fixture, build step, or operator.
+  Create fixture-owned temporary directories before writing; preserve assertions
+  and intentional missing-file tests. Change test setup only when the documented
+  or established contract justifies it. Do not fabricate inputs or add production
+  filesystem side effects solely to make a fixture pass.
 - Run the assigned targeted checks after changes; inspect their results before
   declaring completion. Include relevant integration checks for changed interfaces.
 - Keep done=false while awaiting tool results needed to verify edits or tests.

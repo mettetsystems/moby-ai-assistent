@@ -211,6 +211,7 @@
         <textarea id="prompt-text" required rows="16" style="width:100%;background:var(--bg);color:var(--text);padding:12px;border:1px solid var(--line);font:14px/1.5 monospace"></textarea>
         <p id="prompt-size" class="status">0 characters</p>
         <p id="launch-help" class="hint">The full text is saved as the project objective. Starting uses the configured models and executes coding tools in a new workspace. Keep this console running. Import size is not a guarantee that the prompt fits your model’s context window.</p>
+        <label><input id="workload-final-review" type="checkbox"/> Final Review — use the configured Colibri model after implementation to review and correct remaining issues, with a report.</label>
         <button id="launch-workload" class="btn primary" type="submit">Create and start</button>
         <p id="import-message" class="status" role="status"></p>
       </form>
@@ -240,6 +241,23 @@
       </p>
       <div id="roles" class="roles"></div>
       <div class="row">
+        <article class="card">
+          <h2>Final Fail / Final Review</h2>
+          <label><input id="final-enabled" type="checkbox"/> Enable local final passes</label>
+          <p>Final Fail makes one last recovery plan before a failure stop. Final Review is selected per workload. Both preserve manual Stop and require normal worker validation.</p>
+          <label for="final-model">Model identity</label><input id="final-model"/>
+          <label for="final-weights">Colibri-compatible Hugging Face weights repository</label><input id="final-weights"/>
+          <label for="final-directory">Local storage directory (absolute path)</label><input id="final-directory"/>
+          <p>GLM-5.2 INT4 requires about 372 GB plus headroom. Choose a drive with enough free space. CPU/disk inference is used; no GPU memory is reserved. First save settings, then pre-build before launching work.</p>
+          <label for="final-context">Context tokens</label><input id="final-context" type="number" min="4096" max="65536"/>
+          <label for="final-output">Maximum response tokens</label><input id="final-output" type="number" min="512" max="8192"/>
+          <label for="final-cache">Expert cache slots per layer</label><input id="final-cache" type="number" min="1" max="32"/>
+          <label for="final-timeout">Final planning time limit (seconds, up to 1800)</label><input id="final-timeout" type="number" min="60" max="1800"/>
+          <button id="final-build" class="btn" type="button">Pre-build inference</button>
+          <button id="final-build-refresh" class="btn" type="button">Check build status</button>
+          <button id="final-build-cancel" class="btn" type="button">Cancel pre-build</button>
+          <p id="final-build-status" role="status"></p>
+        </article>
         <button class="btn primary" id="save-settings" type="button">Apply and save</button>
         <span id="settings-msg" class="status"></span>
       </div>
@@ -294,6 +312,7 @@
           <button id="cancel-plan-edit" class="btn" type="button">Cancel edit</button>
           <p id="edit-plan-status" role="status"></p>
         </section>
+        <details><summary>Final Fail / Final Review report</summary><pre id="final-pass-report"></pre></details>
         <details id="review-report-panel" class="hidden"><summary>Read report</summary><pre id="review-report"></pre></details>
         <div id="plan-approval-panel" class="hidden">
           <h3>Review the proposed plan</h3>
@@ -726,6 +745,8 @@
     function renderReview(data,id) {
       if (planEdit && planEdit.project !== id) $("cancel-plan-edit").onclick();
       const review=data.review || {};
+      $("final-pass-report").textContent=[review.final_fail,review.final_review].filter(Boolean).map(report=>
+        report.phase + " — " + report.status + "\n" + report.rationale + "\n" + JSON.stringify(report.task_outcomes || {},null,2)).join("\n\n") || "No final pass report yet.";
       $("edit-plan").disabled=!review.proposal || review.proposal.approved || workloadActionBusy || !!data.workload?.can_stop;
       if (review.job_status) $("review-status").textContent=review.job_status;
       const proposal=review.proposal;
@@ -752,7 +773,7 @@
         const prompt = $("prompt-text").value;
         if (new TextEncoder().encode(prompt).length > 1000000) throw new Error("Prompt exceeds the 1 MB limit.");
         const result = await apiJson("/api/projects", {method:"POST", headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({workflow:$("workload-mode").value || "greenfield", name:$("workload-name").value, prompt, target_directory:$("workload-target").value})});
+          body:JSON.stringify({final_review:$("workload-final-review").checked,workflow:$("workload-mode").value || "greenfield", name:$("workload-name").value, prompt, target_directory:$("workload-target").value})});
         await loadProjects();
         $("project").value = result.project_id;
         $("import-message").textContent = "Started " + result.name;
@@ -868,10 +889,39 @@
       return Number.isFinite(n) ? n : null;
     }
 
+    function finalSettings() {
+      return {enabled:$("final-enabled").checked,model:$("final-model").value,weights_repo:$("final-weights").value,
+        directory:$("final-directory").value,context_tokens:Number($("final-context").value),
+        max_output_tokens:Number($("final-output").value),cache_slots:Number($("final-cache").value),
+        timeout_seconds:Number($("final-timeout").value)};
+    }
+    function showFinalBuild(data) {
+      $("final-build-status").textContent=(data.state || "not built") + ": " + (data.message || "") +
+        (data.directory ? " — Logs: " + data.directory : "");
+      $("final-build").disabled=data.state === "building";
+      $("final-build-cancel").disabled=data.state !== "building";
+    }
+    $("final-build").onclick=async()=>{
+      $("final-build").disabled=true;
+      try { showFinalBuild(await apiJson("/api/final-build",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"build"})})); }
+      catch(error) { $("final-build-status").textContent=error.message; $("final-build").disabled=false; }
+    };
+    $("final-build-refresh").onclick=async()=>{
+      try { showFinalBuild((await apiJson("/api/settings")).final_build || {}); }
+      catch(error) { $("final-build-status").textContent=error.message; }
+    };
+    $("final-build-cancel").onclick=async()=>{
+      try { showFinalBuild(await apiJson("/api/final-build",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"cancel"})})); }
+      catch(error) { $("final-build-status").textContent=error.message; }
+    };
     async function loadSettings() {
       const res = await fetch("/api/settings");
       const data = await res.json();
       $("roles").innerHTML = roles.map(role => roleCard(role, data.models[role])).join("");
+      const f=data.final_fail || {};
+      $("final-enabled").checked=!!f.enabled;
+      for (const [id,key] of [["model","model"],["weights","weights_repo"],["directory","directory"],["context","context_tokens"],["output","max_output_tokens"],["cache","cache_slots"],["timeout","timeout_seconds"]]) $("final-"+id).value=f[key] ?? "";
+      showFinalBuild(data.final_build || {});
     }
 
     $("save-settings").onclick = async () => {
@@ -890,7 +940,7 @@
       const res = await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ models }),
+        body: JSON.stringify({ models, final_fail: finalSettings() }),
       });
       const body = await res.json();
       const msg = $("settings-msg");

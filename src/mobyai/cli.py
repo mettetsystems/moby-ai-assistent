@@ -819,25 +819,49 @@ async def _execute_project_inner(
         raise CliError(f"{current.project_id} is {current.state.value}, cannot run")
 
     steps = max_steps
-    try:
-        result = await run_project(
-            current,
-            runtime.store,
-            runtime.worker,
-            runtime.orchestrator,
-            workspace,
-            max_task_attempts=runtime.config.runtime.max_task_attempts,
-            max_steps=steps,
-            token_budget=runtime.config.context.worker_token_budget,
-            max_turns=runtime.config.runtime.max_worker_turns,
-            command_timeout_seconds=runtime.config.runtime.command_timeout_seconds,
-            planner=runtime.planner,
-            max_replans=runtime.config.runtime.max_replans,
-            services=runtime.services,
-            prefer_import_contracts=runtime.config.context.prefer_import_contracts,
-        )
-    except OrchestrationError as exc:
-        raise CliError(str(exc)) from exc
+    from mobyai.final_pass.service import final_pass, finish_reports
+    from mobyai.engine.stopping import pause_interrupted
+    from mobyai.inference.base import InferenceError
+    while True:
+        try:
+            result = await run_project(
+                current,
+                runtime.store,
+                runtime.worker,
+                runtime.orchestrator,
+                workspace,
+                max_task_attempts=runtime.config.runtime.max_task_attempts,
+                max_steps=steps,
+                token_budget=runtime.config.context.worker_token_budget,
+                max_turns=runtime.config.runtime.max_worker_turns,
+                command_timeout_seconds=runtime.config.runtime.command_timeout_seconds,
+                planner=runtime.planner,
+                max_replans=runtime.config.runtime.max_replans,
+                services=runtime.services,
+                prefer_import_contracts=runtime.config.context.prefer_import_contracts,
+            )
+        except (OrchestrationError, InferenceError) as exc:
+            failed=await _require_project(runtime,project.project_id)
+            failed=failed.model_copy(update={'last_error':str(exc)})
+            await runtime.store.projects.save(failed)
+            recovered=await final_pass(runtime,failed) if max_steps is None else None
+            if recovered is not None:
+                current=recovered
+                continue
+            raise CliError(str(exc)) from exc
+        try:
+            recovered=await final_pass(runtime,result.project,
+                review=result.project.state == ProjectState.COMPLETED) if max_steps is None else None
+        except ValueError as exc:
+            # A requested review must not silently turn into a successful completion.
+            failed=result.project.model_copy(update={'state':ProjectState.READY,'last_error':str(exc)})
+            await runtime.store.projects.save(failed)
+            await pause_interrupted(runtime.store,failed.project_id)
+            print(str(exc),file=stdout,flush=True)
+            return 1
+        if recovered is None: break
+        current=recovered
+    await finish_reports(runtime,result.project)
     print(
         f"{result.project.project_id} {result.project.state.value} "
         f"decision={result.decision.value}",

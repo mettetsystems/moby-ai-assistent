@@ -313,6 +313,12 @@ and semantic-plan repairs keep the first repair at baseline, then use the recove
 profiles within their existing repair limits. Recovery never bypasses validation.
 `runtime.max_replans` is now a compatibility field only. Exhaustive recovery has
 no project replan-count cap; history is retained for diagnosis.
+Missing-file exceptions enter local repair rather than being mistaken for DNS
+errors. Recovery checks the failing operation and fixture setup, preserves test
+assertions, and reruns validation. These repairs do not raise sampling or timeouts;
+repeated failures can still escalate to the planner. Genuine network, access, and
+approval-limit failures retain their existing pause behavior.
+
 
 Install and enable [MLflow tracing](https://mlflow.org/docs/latest/genai/tracing/app-instrumentation/manual-tracing/):
 
@@ -859,3 +865,58 @@ Edits are archived in `mobyMinutes/runs/<run>/plan-edits`. The editor becomes
 unavailable after the first approval: subsequent agent-generated plans cannot
 be edited through this feature. Stale edits and invalid task dependencies are
 rejected without changing the saved plan.
+
+### Final Fail and Final Review (Colibri)
+
+**Settings → Final Fail / Final Review** configures an optional local recovery
+planner. The default is **GLM-5.2** (`zai-org/GLM-5.2`), using Colibri's documented
+`mastouri/GLM-5.2-colibri-int4-g64-with-int8-mtp` container. This is the supported
+GLM 5-family package, not Qwen3-Coder. Qwen3-Coder-480B remains unsupported by the
+pinned runtime. All existing workloads retain the ordinary behavior until enabled.
+
+1. Choose the model identity, compatible weights repository and an absolute storage
+   directory. The GLM container needs roughly **372 GB plus headroom**; choose a
+   sufficiently large drive, preferably fast SSD storage. It does not fit in
+   204 GB of free space. The model ID labels the API; it does not convert weights.
+2. Save settings, then click **Pre-build inference**. Install `git`, `make`, and a C
+   compiler first (Fedora: `sudo dnf install git make gcc`). The job fetches the
+   pinned Colibri source, checks repository size/free space, downloads a pinned
+   weights snapshot, compiles the CPU engine, then loads it for a generation smoke
+   test. Check status or cancel from Settings. Build and inference logs live under
+   the displayed directory; partial downloads are retained for retry.
+3. Wait for **ready**, enable local final passes and save. Changing model or runtime
+   parameters invalidates readiness and requires another pre-build. Readiness means
+   the engine generated text, not that this model is proven to repair your project.
+4. Optionally check **Final Review** when creating a workload. Its report is shown
+   in Monitor and stored under `mobyMinutes/runs/<run>/final_review.md` and `.json`.
+
+**Final Fail** receives the objective, current plan, recent failed attempts and log
+excerpts before an eligible execution failure/blocked run exits. It may inspect
+current code, then supplies a validated plan to the ordinary orchestration loop.
+The regular worker performs changes and the harness runs tests. There is at most
+one final recovery handoff per project; attempts and passed tasks remain intact.
+Access failures, missing toolchains, resource/context exhaustion, explicit step
+limits, manual Stop and timeout-approval gates are not bypassed. It is not a new
+retry-budget limit and does not replace normal recovery rounds.
+
+**Final Review** runs after normal implementation completes. It preserves completed
+tasks, adds only justified follow-up tasks, and returns those to normal execution.
+No-change reviews produce a report too. Reports distinguish proposed changes from
+actual task outcomes, with the rationale, task descriptions and validation commands.
+A failed requested review pauses rather than silently claiming completion; its error
+remains available in Monitor. To proceed without a failed review, explicitly disable
+local final passes in Settings before resuming. Reviews and final recovery cannot
+silently overwrite code changed by a developer during their planning phase.
+
+Colibri starts only during final planning/review and unloads before regular agents
+continue. MobyAI unloads its own managed inference processes first. The current
+adapter uses **CPU/disk inference**, not CUDA acceleration; it serializes final
+runtime jobs and never terminates an unrelated server. CPU inference on a 744B MoE
+may be slow. Configure context, output tokens, expert cache slots and the phase
+limit (up to 1800 seconds); exceeding context capacity fails explicitly rather than
+silently omitting required evidence. The model is not downloaded during installation.
+
+Runtime source is pinned to Colibri commit
+`a8f2ca623ffe9de9df11d56f34d11d2d501493d3`. See the supplied
+[Colibri repository](https://github.com/mettetsystems/colibri) and its
+[API documentation](https://github.com/mettetsystems/colibri/blob/main/docs/api.md).

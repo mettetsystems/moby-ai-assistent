@@ -33,6 +33,7 @@ class Workloads:
         self.stop_challenge = None
         self.move_task = None
         self.relocation = None
+        self.final_build_task = None
 
     async def create(self, payload):
         if not isinstance(payload, dict):
@@ -44,19 +45,28 @@ class Workloads:
             raise ValueError("Provide a non-empty text prompt")
         if len(prompt.encode('utf-8')) > MAX_PROMPT_BYTES:
             raise ValueError("Prompt exceeds the 1 MB import limit")
+        if not isinstance(payload.get('final_review',False),bool):
+            raise ValueError('Final Review must be true or false')
+        if self.runtime.config.final_fail.enabled:
+            from mobyai.final_pass.runtime import status
+            if status(self.runtime.config.final_fail)['state'] != 'ready':
+                raise ValueError('Pre-build final inference in Settings before launching with Final Fail/Review enabled')
+        if payload.get('final_review') and not self.runtime.config.final_fail.enabled:
+            raise ValueError('Enable Final Fail/Review in Settings before selecting Final Review')
         async with self.lock:
             self._assert_idle()
             workflow = payload.get('workflow', 'greenfield')
             if workflow == 'existing':
-                return await self._create_existing(name.strip(), prompt, payload.get('target_directory'))
+                return await self._create_existing(name.strip(), prompt, payload.get('target_directory'),payload.get('final_review',False))
             if workflow != 'greenfield':
                 raise ValueError('Unknown workflow')
-            return await self._create(name.strip(), prompt, payload.get('target_directory'))
+            return await self._create(name.strip(), prompt, payload.get('target_directory'),final_review=payload.get('final_review',False))
 
     def _busy(self):
         return bool((self.process is not None and self.process.returncode is None)
                     or (self.stop_task and not self.stop_task.done())
-                    or (self.move_task and not self.move_task.done()))
+                    or (self.move_task and not self.move_task.done())
+                    or (self.final_build_task and not self.final_build_task.done()))
 
     def _assert_idle(self):
         if self._busy():
@@ -92,7 +102,7 @@ class Workloads:
                 raise ValueError('Target directory must be new or empty; existing files will not be overwritten')
         path.mkdir(parents=True, exist_ok=True)
 
-    async def _create(self, name, prompt, target=None, restarted_from=None):
+    async def _create(self, name, prompt, target=None, restarted_from=None, final_review=False):
         project_id = 'import-' + uuid4().hex[:12]
         workspace = self._target(target, self.runtime.config.project.workspace_root / project_id)
         await self._assert_unused_target(workspace)
@@ -102,11 +112,13 @@ class Workloads:
                           workspace_root=workspace, created_at=now, updated_at=now)
         await self.runtime.store.projects.save(project)
         await self.event(project_id, 'prompt_imported', {'characters': len(prompt)})
+        if final_review:
+            await self.event(project_id,'final_review_enabled',{'enabled':True})
         if restarted_from:
             await self.event(project_id, 'workload_restarted', {'source_project_id': restarted_from})
         return await self._launch(project, 'run')
 
-    async def _create_existing(self, name, prompt, target):
+    async def _create_existing(self, name, prompt, target, final_review=False):
         from mobyai.review import minutes
         workspace = self._target(target)
         if not workspace.is_dir() or not any(workspace.iterdir()):
@@ -128,7 +140,37 @@ class Workloads:
         minutes.initialize(project, origin='greenfield' if native else 'external')
         await self.runtime.store.projects.save(project)
         await self.event(project.project_id,'existing_codebase_imported',{'mode':'native' if native else 'external'})
+        if final_review:
+            await self.event(project.project_id,'final_review_enabled',{'enabled':True})
         return await self._launch(project,'run')
+
+    async def build_final(self, payload):
+        from mobyai.final_pass.runtime import build, status
+        if not isinstance(payload,dict) or payload.get('action') not in {'build','cancel'}:
+            raise ValueError('Choose build or cancel')
+        async with self.lock:
+            if payload.get('action') == 'cancel':
+                if self.final_build_task and not self.final_build_task.done():
+                    self.final_build_task.cancel()
+                    try: await self.final_build_task
+                    except asyncio.CancelledError: pass
+                return status(self.runtime.config.final_fail)
+            self._assert_idle()
+            for id in await self.runtime.store.projects.list_ids():
+                if project_is_running(self.runtime.config.persistence.database_path,id):
+                    raise ValueError('Stop running workloads before pre-building final inference')
+            config=self.runtime.config.final_fail.model_copy(deep=True)
+            self.final_build_task=asyncio.create_task(self._build_final_job(config))
+            return {'state':'building','message':'Pre-build started; it downloads the configured weights, compiles and smoke-tests Colibri.'}
+
+    async def _build_final_job(self, config):
+        from mobyai.final_pass.runtime import build, publish
+        try:
+            await build(config,self.runtime.config)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            publish(config,'failed',str(exc))
 
     async def edit_plan(self, payload):
         from mobyai.review import editing
@@ -359,6 +401,10 @@ class Workloads:
             raise
 
     async def close(self):
+        if self.final_build_task and not self.final_build_task.done():
+            self.final_build_task.cancel()
+            try: await self.final_build_task
+            except asyncio.CancelledError: pass
         if self.move_task is not None:
             await self.move_task
         if self.stop_task is not None:

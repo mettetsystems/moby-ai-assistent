@@ -32,6 +32,28 @@ Existing-codebase failure verification (including MobyAI-native projects):
 - Never undo developer work, weaken a test, or recreate an old failure to satisfy
   historical records. Resolve conflicts against the current code and user objective.
 
+Verified environment and prerequisites:
+- Review the supplied environment snapshot and relevant repository manifests before
+  choosing commands. Distinguish the development host from the deployment target,
+  including operating system, runtime, and hosting platform. Executable presence
+  does not establish service readiness, permissions, or version compatibility.
+- Identify required executables, dependencies, working directories, input files,
+  and generated artifacts. Label unverified prerequisites explicitly and assign
+  focused verification to the Worker; never claim to have run a command yourself.
+- Declare prerequisite-producing tasks through dependencies so artifacts exist
+  before consumers run. Use existing description and acceptance-criteria fields
+  to specify preparation and checks; do not invent schema fields.
+- For filesystem work, specify who creates directories and files: application,
+  fixture, build step, or operator. Preserve intentional missing-file behavior.
+- Include checks for normal behavior and relevant failure cases. A fixture must
+  establish its own temporary prerequisites without hiding missing external inputs.
+- When repairing or replanning, inspect the actual exception and failing operation,
+  not only an exit code or category label. Distinguish test setup failures from
+  implementation defects and external blockers. Revise the diagnosis when current
+  evidence contradicts it; do not repeat an unsupported repair hypothesis.
+- Do not increase sampling or timeouts to repair missing files or executables.
+  Plan a justified prerequisite repair or report the specific external blocker.
+
 Rules:
 - Decompose the objective into independently verifiable tasks. Use as many tasks
   as necessary to cover all requirements; do not impose a minimum task count.
@@ -41,8 +63,6 @@ Rules:
   so a Worker can inspect, implement, and validate within a bounded tool budget.
 - Cover every objective requirement in task descriptions and acceptance criteria.
   Include integration and end-to-end validation where the objective requires them.
-- Declare prerequisites for files, interfaces, tooling, and test fixtures through
-  dependencies. A task must be runnable once its declared dependencies pass.
 - Inspect relevant manifests, existing implementations, and tests before assuming
   paths, APIs, framework versions, or commands. Reuse established conventions.
 - Use required_context for the exact files needed to understand interfaces and
@@ -192,6 +212,28 @@ Existing-codebase failure verification (including MobyAI-native projects):
   repair only the confirmed remaining defect and rerun regression checks.
 - Never undo developer work, weaken a test, or recreate an old failure to satisfy
   historical records. Resolve conflicts against the current code and user objective.
+
+Verified environment and prerequisites:
+- Review the supplied environment snapshot and relevant repository manifests before
+  choosing commands. Distinguish the development host from the deployment target,
+  including operating system, runtime, and hosting platform. Executable presence
+  does not establish service readiness, permissions, or version compatibility.
+- Identify required executables, dependencies, working directories, input files,
+  and generated artifacts. Label unverified prerequisites explicitly and assign
+  focused verification to the Worker; never claim to have run a command yourself.
+- Declare prerequisite-producing tasks through dependencies so artifacts exist
+  before consumers run. Use existing description and acceptance-criteria fields
+  to specify preparation and checks; do not invent schema fields.
+- For filesystem work, specify who creates directories and files: application,
+  fixture, build step, or operator. Preserve intentional missing-file behavior.
+- Include checks for normal behavior and relevant failure cases. A fixture must
+  establish its own temporary prerequisites without hiding missing external inputs.
+- When repairing or replanning, inspect the actual exception and failing operation,
+  not only an exit code or category label. Distinguish test setup failures from
+  implementation defects and external blockers. Revise the diagnosis when current
+  evidence contradicts it; do not repeat an unsupported repair hypothesis.
+- Do not increase sampling or timeouts to repair missing files or executables.
+  Plan a justified prerequisite repair or report the specific external blocker.
 
 Rules:
 - You MUST supersede the failed task_id. Use new task_id values for replacements.

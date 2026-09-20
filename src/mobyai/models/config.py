@@ -185,7 +185,35 @@ class TracingConfig(_StrictModel):
     experiment: str = "MobyAI"
 
 
+class FinalFailConfig(_StrictModel):
+    enabled: bool = False
+    model: str = "zai-org/GLM-5.2"
+    weights_repo: str = "mastouri/GLM-5.2-colibri-int4-g64-with-int8-mtp"
+    directory: Path = Path("~/MobyAI/colibri").expanduser()
+    context_tokens: int = Field(default=16384, ge=4096, le=65536)
+    max_output_tokens: int = Field(default=4096, ge=512, le=8192)
+    cache_slots: int = Field(default=4, ge=1, le=32)
+    timeout_seconds: int = Field(default=1800, ge=60, le=1800)
+
+    @field_validator('model', 'weights_repo')
+    @classmethod
+    def valid_repo(cls, value):
+        import re
+        if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', value):
+            raise ValueError('Use an organization/model repository identifier')
+        return value
+
+    @field_validator('directory', mode='before')
+    @classmethod
+    def local_directory(cls, value):
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            raise ValueError('Colibri directory must be absolute')
+        return path
+
+
 class AppConfig(_StrictModel):
+    final_fail: FinalFailConfig = Field(default_factory=FinalFailConfig)
     tracing: TracingConfig = Field(default_factory=TracingConfig)
     project: ProjectSettings
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)

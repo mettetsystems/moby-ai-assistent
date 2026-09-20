@@ -38,9 +38,15 @@ class ConsoleService:
         self.vault_csrf = secrets.token_urlsafe(32)
 
     def settings(self) -> dict[str, Any]:
-        return serialize_role_settings(self.runtime.config)
+        from mobyai.final_pass.runtime import status
+        return {**serialize_role_settings(self.runtime.config),'final_build':status(self.runtime.config.final_fail)}
 
     def save_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if 'final_fail' in payload:
+            from mobyai.models.config import FinalFailConfig
+            proposed=FinalFailConfig.model_validate(payload['final_fail'])
+            if proposed != self.runtime.config.final_fail and self.workloads._busy():
+                raise ValueError('Stop the workload or cancel pre-build before changing Final Fail settings')
         apply_role_settings(self.runtime.config, payload)
         overlay = save_settings_overlay(self.config_path, self.runtime.config)
         return {"ok": True, "overlay": str(overlay), "settings": self.settings()}
@@ -71,11 +77,17 @@ class ConsoleService:
         snapshot["workload"] = self.workloads.status(project_id, snapshot["project"]["state"])
         from mobyai.review.service import view
         snapshot["review"] = view(self._call(self.runtime.store.projects.get(project_id)))
+        from mobyai.review import minutes
+        project=self._call(self.runtime.store.projects.get(project_id))
+        if project is not None and (project.workspace_root/'mobyMinutes').is_dir():
+            for phase in ('final_fail','final_review'):
+                path=minutes.run_dir(project)/(phase+'.json')
+                if path.is_file(): snapshot['review'][phase]=minutes.read(path)
         review_events = self._call(self.runtime.store.events.list_for_project(project_id))
         from mobyai.engine.timeouts import approval_view
         snapshot["timeout_policy"] = approval_view(review_events)
         for item in reversed(review_events):
-            if item.event in {'logic_report_failed', 'code_review_failed', 'logic_report_requested', 'logic_report_generated', 'code_archaeology_started', 'code_archaeology_completed', 'review_plan_proposed', 'review_plan_approved'}:
+            if item.event.startswith(('final_fail_', 'final_review_')) or item.event in {'logic_report_failed', 'code_review_failed', 'logic_report_requested', 'logic_report_generated', 'code_archaeology_started', 'code_archaeology_completed', 'review_plan_proposed', 'review_plan_approved'}:
                 snapshot["review"]["job_status"] = item.event.replace('_', ' ') + (': '+str(item.payload['error']) if item.payload.get('error') else '')
                 break
         snapshot["launch_log"] = ""
@@ -196,7 +208,7 @@ def make_handler(service: ConsoleService) -> type[BaseHTTPRequestHandler]:
             if route == "/api/secrets":
                 self._vault_mutation()
                 return
-            if route not in {"/api/workloads/edit-plan", "/api/projects", "/api/workloads/prepare-stop", "/api/workloads/stop", "/api/workloads/resume", "/api/workloads/restart", "/api/workloads/target", "/api/workloads/delete", "/api/workloads/approve-plan", "/api/workloads/approve-timeout", "/api/workloads/report"}:
+            if route not in {"/api/final-build", "/api/workloads/edit-plan", "/api/projects", "/api/workloads/prepare-stop", "/api/workloads/stop", "/api/workloads/resume", "/api/workloads/restart", "/api/workloads/target", "/api/workloads/delete", "/api/workloads/approve-plan", "/api/workloads/approve-timeout", "/api/workloads/report"}:
                 self._json(404, {"error": "not found"})
                 return
             origin = self.headers.get("Origin")
@@ -212,7 +224,8 @@ def make_handler(service: ConsoleService) -> type[BaseHTTPRequestHandler]:
                     self._json(413, {"error": "Import request is too large or empty"})
                     return
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                handler = {"/api/projects": service.workloads.create,
+                handler = {"/api/final-build": service.workloads.build_final,
+                           "/api/projects": service.workloads.create,
                            "/api/workloads/prepare-stop": service.workloads.prepare_stop,
                            "/api/workloads/stop": service.workloads.stop,
                            "/api/workloads/delete": service.workloads.delete,

@@ -305,3 +305,23 @@ test('saving initial plan sends draft version without starting a workload', asyn
   assert.equal(requests[1].reason,'Clarify acceptance tests');
   assert.equal(p.calls.some(([url])=>/approve-plan|restart|resume/.test(url)),false);
 });
+
+test('final pre-build is explicit and reports preparation status', async()=>{
+  const p=page();
+  assert.equal(p.calls.some(([url])=>url==='/api/final-build'),false);
+  p.context.fetch=async(url,options)=>{
+    p.calls.push([url,options]);
+    return {ok:true,text:async()=>JSON.stringify({state:'building',message:'Downloading'})};
+  };
+  await p.element('final-build').onclick();
+  assert.deepEqual(JSON.parse(p.calls.at(-1)[1].body),{action:'build'});
+  assert.equal(p.element('final-build').disabled,true);
+  assert.match(p.element('final-build-status').textContent,/Downloading/);
+});
+test('final review reports render as text, not markup',()=>{
+  const p=page();
+  p.context.data={review:{final_review:{phase:'final_review',status:'planned',rationale:'<script>bad</script>'}}};
+  vm.runInContext('renderReview(data,"demo")',p.context);
+  assert.match(p.element('final-pass-report').textContent,/<script>/);
+  assert.equal(p.element('final-pass-report').innerHTML,'');
+});
