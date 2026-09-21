@@ -706,6 +706,7 @@ async def _execute_project(runtime, project, stdout, *, max_steps):
                 await runtime.store.projects.save(project)
                 print(f"resumed to {project.state.value}", file=stdout)
             from mobyai.engine.timeouts import TimeoutPolicy, TimeoutApprovalRequired
+            from mobyai.sandbox.builder import SandboxPreparationError
             timeout_policy = await TimeoutPolicy(runtime.store, project.project_id).load()
             execution_started = datetime.now(UTC)
             track_time = project.state not in {ProjectState.COMPLETED, ProjectState.FAILED}
@@ -718,15 +719,18 @@ async def _execute_project(runtime, project, stdout, *, max_steps):
                 async with keep_awake(enabled=track_time and runtime.config.runtime.keep_awake, stdout=stdout):
                     from mobyai.cli_operations import run_with_pause, PauseRequested
                     try:
-                        with timeout_policy.activate():
+                        from mobyai.sandbox.policy import activate as sandbox_policy
+                        from mobyai.sandbox.preparation import run_prepared
+                        with timeout_policy.activate(), sandbox_policy(runtime.config.sandbox):
                             return await run_with_pause(runtime, project.project_id,
-                                lambda: _execute_project_inner(runtime, project, stdout, max_steps=max_steps),
+                                lambda: run_prepared(runtime, project, stdout,
+                                    lambda: _execute_project_inner(runtime, project, stdout, max_steps=max_steps)),
                                 started=execution_started)
                     except PauseRequested:
                         await pause_interrupted(runtime.store, project.project_id)
                         print(f"{project.project_id} PAUSED", file=stdout, flush=True)
                         return 0
-            except TimeoutApprovalRequired as exc:
+            except (TimeoutApprovalRequired, SandboxPreparationError) as exc:
                 current = await _require_project(runtime, project.project_id)
                 await runtime.store.projects.save(current.model_copy(update={"last_error": str(exc)}))
                 await pause_interrupted(runtime.store, project.project_id)

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from mobyai.execution.commands import CommandResult, CommandRunner
 from mobyai.execution.workspace import Workspace
+from mobyai.execution.errors import DestructiveCommandError
 
 
 class TestRunner:
@@ -23,11 +24,13 @@ class TestRunner:
         timeout_seconds: int = 600,
         cwd: Path | str | None = None,
     ) -> CommandResult:
-        return await self.runner.run(
-            command,
-            cwd=cwd or self.workspace.root,
-            timeout_seconds=timeout_seconds,
-        )
+        try:
+            return await self.runner.run(command, cwd=cwd or self.workspace.root,
+                                         timeout_seconds=timeout_seconds)
+        except DestructiveCommandError as exc:
+            return CommandResult(command=command, exit_code=126, stdout="",
+                stderr=f"Execution policy blocked command: {exc}", duration_seconds=0)
+
 
     async def run_all(
         self,

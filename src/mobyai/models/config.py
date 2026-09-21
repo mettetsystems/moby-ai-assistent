@@ -212,7 +212,11 @@ class FinalFailConfig(_StrictModel):
         return path
 
 
+from mobyai.sandbox.policy import SandboxConfig
+
+
 class AppConfig(_StrictModel):
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     final_fail: FinalFailConfig = Field(default_factory=FinalFailConfig)
     tracing: TracingConfig = Field(default_factory=TracingConfig)
     project: ProjectSettings

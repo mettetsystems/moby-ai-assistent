@@ -76,7 +76,9 @@ class CommandRunner:
             raise WorkspaceError("Command must be a non-empty argv list")
         if any(not isinstance(part, str) or part == "" for part in command):
             raise WorkspaceError("Command argv must be non-empty strings")
-        if not self.allow_destructive and _is_destructive(command):
+        from mobyai.sandbox.policy import current as sandbox_policy
+        sandbox = sandbox_policy()
+        if sandbox is None and not self.allow_destructive and _is_destructive(command):
             raise DestructiveCommandError(f"Destructive command denied: {command[0]}")
 
         workdir = self.workspace.resolve(cwd) if cwd is not None else self.workspace.root
@@ -104,6 +106,12 @@ class CommandRunner:
         policy = current_policy()
         key = operation_key("command", [str(workdir), command])
         timeout_seconds = policy.budget(key, timeout_seconds) if policy else min(timeout_seconds, 1800)
+        if sandbox is not None:
+            from mobyai.sandbox.client import execute
+            result = await execute(sandbox, self.workspace, command, workdir, timeout_seconds, self.max_output_bytes)
+            if result.timed_out and policy is not None:
+                await policy.timed_out(key, timeout_seconds, f"command: {Path(command[0]).name}")
+            return result
         stdout_buf = _BoundedBuffer(self.max_output_bytes)
         stderr_buf = _BoundedBuffer(self.max_output_bytes)
         started = time.monotonic()

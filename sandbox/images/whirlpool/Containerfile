@@ -1,0 +1,9 @@
+FROM registry.fedoraproject.org/fedora@sha256:a7a70ddf75df79b305c399a1850d086c3aadee16ae614595a0d88ac0e5886a67
+RUN dnf -y install python3 python3-pip git nodejs npm mesa-libGL libxkbcommon-x11 dbus-libs glib2 fontconfig freetype dejavu-sans-fonts && dnf clean all
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" QT_QPA_PLATFORM=offscreen PYTHONDONTWRITEBYTECODE=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+COPY requirements.txt /opt/sandbox/requirements.txt
+RUN python -m pip --isolated install --index-url https://pypi.org/simple --only-binary=:all: --no-cache-dir -r /opt/sandbox/requirements.txt && python -m pip check && python -m pip freeze > /opt/sandbox/requirements.lock
+RUN rpm -qa | sort > /opt/sandbox/rpm-packages.txt
+WORKDIR /workspace
+CMD ["python", "--version"]

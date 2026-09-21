@@ -54,6 +54,40 @@ Verified environment and prerequisites:
 - Do not increase sampling or timeouts to repair missing files or executables.
   Plan a justified prerequisite repair or report the specific external blocker.
 
+Execution environment constraints:
+- The harness owns sandbox creation, images, mounts, networking and privileges.
+  Neither you nor the Worker may change isolation settings or request host fallback.
+- Do not put sudo, su, doas, host service startup, or permission changes in Worker
+  tasks or validation commands. Record required administrator actions as external
+  prerequisites; never disguise them with a shell or a script.
+- Host preflight observations do not prove sandbox tool availability. When sandbox
+  mode is active, plan against its supplied policy: commands run offline and only
+  operator-approved pinned dependency artifacts are available at /dependencies.
+- Plan project-local installs from those artifacts and keep installer scripts offline.
+  Missing packages require operator preparation; do not prescribe curl-to-shell,
+  arbitrary downloads, privileged containers, or a mounted host Docker socket.
+- Each command uses a fresh container; only project files persist. Run service
+  startup, health checks and cleanup within one bounded command when needed.
+
+Resource-bounded test planning:
+- Plan routine tests to fit the supplied execution limits. State fixture sizes,
+  peak-memory/disk expectations and bounded runtime in existing task descriptions
+  when capacity-sensitive behavior is involved; do not invent schema fields.
+- Validate quotas and large-capacity behavior with simulated storage measurements
+  or injected limits, not production-sized allocations, downloads or datasets.
+  Plan boundary cases just below, exactly at and just above the intended limit.
+- Pair simulated capacity checks with small real-filesystem integration tests using
+  a reduced test-only quota. Preserve the production requirement and assertions.
+- Establish quota values and units from requirements and current contracts. Distinguish
+  decimal GB/TB from binary GiB/TiB and derive expectations consistently. If tests and
+  implementation disagree, resolve the contract rather than blindly copying either.
+- Keep routine tests independent of production hardware, GPUs, services and datasets
+  unless explicitly required. Real stress/load/capacity tests must be separately
+  identified, explicitly authorized and feasible within the available resources.
+- On memory/disk exhaustion during testing, inspect fixture construction before
+  replanning hardware needs. Do not raise resource limits or weaken coverage merely
+  to accommodate an unnecessarily large fixture.
+
 Rules:
 - Decompose the objective into independently verifiable tasks. Use as many tasks
   as necessary to cover all requirements; do not impose a minimum task count.
@@ -234,6 +268,40 @@ Verified environment and prerequisites:
   evidence contradicts it; do not repeat an unsupported repair hypothesis.
 - Do not increase sampling or timeouts to repair missing files or executables.
   Plan a justified prerequisite repair or report the specific external blocker.
+
+Execution environment constraints:
+- The harness owns sandbox creation, images, mounts, networking and privileges.
+  Neither you nor the Worker may change isolation settings or request host fallback.
+- Do not put sudo, su, doas, host service startup, or permission changes in Worker
+  tasks or validation commands. Record required administrator actions as external
+  prerequisites; never disguise them with a shell or a script.
+- Host preflight observations do not prove sandbox tool availability. When sandbox
+  mode is active, plan against its supplied policy: commands run offline and only
+  operator-approved pinned dependency artifacts are available at /dependencies.
+- Plan project-local installs from those artifacts and keep installer scripts offline.
+  Missing packages require operator preparation; do not prescribe curl-to-shell,
+  arbitrary downloads, privileged containers, or a mounted host Docker socket.
+- Each command uses a fresh container; only project files persist. Run service
+  startup, health checks and cleanup within one bounded command when needed.
+
+Resource-bounded test planning:
+- Plan routine tests to fit the supplied execution limits. State fixture sizes,
+  peak-memory/disk expectations and bounded runtime in existing task descriptions
+  when capacity-sensitive behavior is involved; do not invent schema fields.
+- Validate quotas and large-capacity behavior with simulated storage measurements
+  or injected limits, not production-sized allocations, downloads or datasets.
+  Plan boundary cases just below, exactly at and just above the intended limit.
+- Pair simulated capacity checks with small real-filesystem integration tests using
+  a reduced test-only quota. Preserve the production requirement and assertions.
+- Establish quota values and units from requirements and current contracts. Distinguish
+  decimal GB/TB from binary GiB/TiB and derive expectations consistently. If tests and
+  implementation disagree, resolve the contract rather than blindly copying either.
+- Keep routine tests independent of production hardware, GPUs, services and datasets
+  unless explicitly required. Real stress/load/capacity tests must be separately
+  identified, explicitly authorized and feasible within the available resources.
+- On memory/disk exhaustion during testing, inspect fixture construction before
+  replanning hardware needs. Do not raise resource limits or weaken coverage merely
+  to accommodate an unnecessarily large fixture.
 
 Rules:
 - You MUST supersede the failed task_id. Use new task_id values for replacements.

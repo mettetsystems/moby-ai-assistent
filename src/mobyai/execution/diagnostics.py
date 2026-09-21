@@ -13,6 +13,9 @@ class FailureDiagnosis:
 
 def diagnose(text: str) -> FailureDiagnosis:
     lower = text.lower()
+    if 'sandbox unavailable:' in lower or 'execution policy blocked command:' in lower:
+        return FailureDiagnosis("execution_policy", "The execution environment or policy blocked validation. Request operator review; do not bypass isolation, use host sudo, or change sampling.", False)
+
     if any(x in lower for x in ('context budget exhausted','context length','context window')):
         return FailureDiagnosis('context_capacity', 'Required context exceeds capacity. Preserve progress and reduce or compact context before resuming.', False)
     if 'timeout approval required' in lower:

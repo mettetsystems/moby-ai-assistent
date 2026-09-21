@@ -30,9 +30,10 @@ class WorkerAgent:
         extra_messages: Sequence[ChatMessage] = (),
     ) -> WorkerResult:
         from mobyai.execution.tool_contracts import tool_guidance
+        from mobyai.sandbox.policy import guidance
         request = ModelRequest(
             messages=[
-                ChatMessage(role="system", content=SYSTEM_PROMPT + "\n" + tool_guidance()),
+                ChatMessage(role="system", content=SYSTEM_PROMPT + "\n" + tool_guidance() + "\n" + guidance()),
                 ChatMessage(role="user", content=USER_PROMPT.format(context=context.render())),
                 *extra_messages,
             ]

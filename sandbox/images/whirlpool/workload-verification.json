@@ -1,0 +1,15 @@
+{
+  "command": [
+    "pytest",
+    "-q",
+    "-m",
+    "not container"
+  ],
+  "exit_code": 137,
+  "stdout": ".....................F.................................................. [ 36%]\n.................................",
+  "stderr": "",
+  "duration_seconds": 2.3013012289302424,
+  "timed_out": false,
+  "stdout_truncated": false,
+  "stderr_truncated": false
+}

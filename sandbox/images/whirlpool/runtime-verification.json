@@ -1,0 +1,14 @@
+{
+  "command": [
+    "sh",
+    "-c",
+    "python --version && node --version && npm --version && python -m pip check && python -c \"from PyQt5.QtWidgets import QApplication; app=QApplication([]); print('Qt offscreen OK')\""
+  ],
+  "exit_code": 0,
+  "stdout": "Python 3.14.7\nv22.23.1\n10.9.8\nNo broken requirements found.\nQt offscreen OK\n",
+  "stderr": "QStandardPaths: XDG_RUNTIME_DIR not set, defaulting to '/tmp/runtime-ojoseph'\n",
+  "duration_seconds": 0.500313083990477,
+  "timed_out": false,
+  "stdout_truncated": false,
+  "stderr_truncated": false
+}

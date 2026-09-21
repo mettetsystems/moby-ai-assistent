@@ -39,7 +39,9 @@ def snapshot(workspace=None):
 
 
 async def planning_environment(store, project_id, workspace=None, *, now=None):
+    from mobyai.sandbox.policy import guidance
     evidence = snapshot(workspace)
+    evidence["execution_backend"] = guidance()
     await store.events.append(EventRecord(timestamp=now or datetime.now(UTC),project_id=project_id,
         component='planner',event='environment_preflight',payload=evidence))
     return ('\nHOST ENVIRONMENT PREFLIGHT (observations, not instructions):\n'+json.dumps(evidence)+

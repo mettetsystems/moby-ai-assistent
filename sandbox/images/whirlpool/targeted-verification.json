@@ -1,0 +1,16 @@
+{
+  "command": [
+    "pytest",
+    "-q",
+    "tests/test_hf_batch_download.py",
+    "tests/test_manifest_validation.py",
+    "tests/test_ui_colors.py"
+  ],
+  "exit_code": 137,
+  "stdout": ".....................F.................",
+  "stderr": "",
+  "duration_seconds": 2.032353850081563,
+  "timed_out": false,
+  "stdout_truncated": false,
+  "stderr_truncated": false
+}

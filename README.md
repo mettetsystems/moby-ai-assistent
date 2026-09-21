@@ -920,3 +920,11 @@ Runtime source is pinned to Colibri commit
 `a8f2ca623ffe9de9df11d56f34d11d2d501493d3`. See the supplied
 [Colibri repository](https://github.com/mettetsystems/colibri) and its
 [API documentation](https://github.com/mettetsystems/colibri/blob/main/docs/api.md).
+
+### Optional worker sandbox
+
+[Sandbox setup and limitations](docs/sandbox.md): rootless Podman command isolation
+managed by a local MCP server, with offline execution and pinned dependency-only
+downloads. The harness owns policy; models cannot enable networking or host privileges.
+Disabled by default. Use a pinned runtime image or `sandbox.auto_prepare: true`
+with an empty image to build/cache the trusted Python/Qt/Node profile automatically.

@@ -1,0 +1,16 @@
+{
+  "command": [
+    "pytest",
+    "-x",
+    "-q",
+    "-m",
+    "not container"
+  ],
+  "exit_code": 1,
+  "stdout": ".....................F\n=================================== FAILURES ===================================\n________________ TestManifestValidation.test_get_storage_usage _________________\n\nself = <tests.test_hf_batch_download.TestManifestValidation object at 0x7f6eef43d8d0>\nvalidator = <src.model_repo.manifest_validator.ManifestValidator object at 0x7f6eef2cc230>\ntmp_path = PosixPath('/tmp/pytest-of-ojoseph/pytest-0/test_get_storage_usage0')\n\n    def test_get_storage_usage(self, validator, tmp_path):\n        \"\"\"Test getting storage usage.\"\"\"\n        usage = validator.get_storage_usage()\n        assert usage[\"used_bytes\"] >= 0\n>       assert usage[\"quota_tb\"] == 10.0\nE       assert 0.009765625 == 10.0\n\ntests/test_hf_batch_download.py:301: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_hf_batch_download.py::TestManifestValidation::test_get_storage_usage\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 21 passed, 2 deselected in 0.24s\n",
+  "stderr": "",
+  "duration_seconds": 0.7037892730440944,
+  "timed_out": false,
+  "stdout_truncated": false,
+  "stderr_truncated": false
+}

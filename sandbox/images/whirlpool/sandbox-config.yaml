@@ -1,0 +1,6 @@
+sandbox:
+  enabled: true
+  auto_prepare: true
+  profile: python-qt-node
+  image: ""
+  network: dependencies_only
