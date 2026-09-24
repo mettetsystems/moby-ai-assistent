@@ -128,6 +128,7 @@ class RuntimeConfig(_StrictModel):
 
 class ContextConfig(_StrictModel):
     worker_token_budget: int = Field(default=48000, ge=1)
+    memory_token_budget: int = Field(default=2000, ge=1)
     log_tail_lines: int = Field(default=150, ge=1)
     prefer_import_contracts: bool = True
 

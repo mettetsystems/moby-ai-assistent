@@ -9,6 +9,7 @@ from mobyai.models.attempt import TaskAttempt
 from mobyai.models.checkpoint import Checkpoint
 from mobyai.models.contract import ModuleContract
 from mobyai.models.event import EventRecord
+from mobyai.models.memory import MemoryEdge, MemoryNode
 from mobyai.models.project import Project
 from mobyai.models.snapshot import ProjectSnapshot
 from mobyai.models.task import Task
@@ -68,6 +69,24 @@ class ContractRepository(Protocol):
     async def list_for_project(self, project_id: str) -> list[ModuleContract]: ...
 
 
+class MemoryRepository(Protocol):
+    async def insert_node(self, node: MemoryNode) -> None: ...
+
+    async def update_node(self, node: MemoryNode) -> None: ...
+
+    async def get_node(self, node_id: str) -> MemoryNode | None: ...
+
+    async def list_nodes(
+        self, project_id: str, *, task_id: str | None = None, live_only: bool = True
+    ) -> list[MemoryNode]: ...
+
+    async def insert_edge(self, edge: MemoryEdge) -> None: ...
+
+    async def list_edges(self, project_id: str, *, live_only: bool = True) -> list[MemoryEdge]: ...
+
+    async def search(self, project_id: str, query: str, *, task_id: str | None = None, limit: int = 20) -> list[MemoryNode]: ...
+
+
 class StateStore(Protocol):
     async def delete_project(self, project_id: str) -> None: ...
 
@@ -77,5 +96,6 @@ class StateStore(Protocol):
     attempts: AttemptRepository
     events: EventRepository
     contracts: ContractRepository
+    memory: MemoryRepository
 
     async def load_snapshot(self, project_id: str) -> ProjectSnapshot | None: ...

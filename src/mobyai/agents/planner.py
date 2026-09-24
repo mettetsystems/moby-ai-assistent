@@ -327,6 +327,7 @@ def _render_replan(
         last_error=_escape_braces(package.last_error or "(none)"),
         reduced_errors=_escape_braces("\n\n".join(errors) if errors else "(none)"),
         attempts=_escape_braces(str(attempts)),
+        shared_memory=_escape_braces(package.shared_memory or "(none)"),
         dag=_escape_braces("\n".join(dag_lines) if dag_lines else "(empty)"),
         existing_paths=_escape_braces(listing),
         module_contracts=_escape_braces(contracts),

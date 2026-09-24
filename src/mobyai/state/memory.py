@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import re
 
 from mobyai.models.attempt import TaskAttempt
 from mobyai.models.checkpoint import Checkpoint
 from mobyai.models.contract import ModuleContract
 from mobyai.models.event import EventRecord
+from mobyai.models.memory import MemoryEdge, MemoryNode
 from mobyai.models.project import Project
 from mobyai.models.snapshot import ProjectSnapshot
 from mobyai.models.task import Task
@@ -163,6 +165,63 @@ class InMemoryContractRepository:
         return [item.model_copy(deep=True) for item in matches]
 
 
+class InMemoryMemoryRepository:
+    def __init__(self) -> None:
+        self._nodes: dict[str, MemoryNode] = {}
+        self._edges: dict[str, MemoryEdge] = {}
+
+    async def insert_node(self, node: MemoryNode) -> None:
+        self._nodes[node.node_id] = node.model_copy(deep=True)
+
+    async def update_node(self, node: MemoryNode) -> None:
+        self._nodes[node.node_id] = node.model_copy(deep=True)
+
+    async def get_node(self, node_id: str) -> MemoryNode | None:
+        item = self._nodes.get(node_id)
+        return item.model_copy(deep=True) if item is not None else None
+
+    async def list_nodes(
+        self, project_id: str, *, task_id: str | None = None, live_only: bool = True
+    ) -> list[MemoryNode]:
+        matches = [
+            item
+            for item in self._nodes.values()
+            if item.project_id == project_id
+            and (task_id is None or item.task_id == task_id)
+            and (not live_only or item.retracted_at is None)
+        ]
+        matches.sort(key=lambda item: (item.asserted_at.isoformat(), item.node_id))
+        return [item.model_copy(deep=True) for item in matches]
+
+    async def insert_edge(self, edge: MemoryEdge) -> None:
+        self._edges[edge.edge_id] = edge.model_copy(deep=True)
+
+    async def list_edges(self, project_id: str, *, live_only: bool = True) -> list[MemoryEdge]:
+        matches = [
+            item
+            for item in self._edges.values()
+            if item.project_id == project_id and (not live_only or item.retracted_at is None)
+        ]
+        matches.sort(key=lambda item: (item.asserted_at.isoformat(), item.edge_id))
+        return [item.model_copy(deep=True) for item in matches]
+
+    async def search(self, project_id: str, query: str, *, task_id: str | None = None, limit: int = 20) -> list[MemoryNode]:
+        terms = [term.lower() for term in re.findall(r"[A-Za-z0-9_]+", query)]
+        if not terms or limit <= 0:
+            return []
+        matches = []
+        for item in self._nodes.values():
+            if item.project_id != project_id or item.retracted_at is not None:
+                continue
+            if task_id is not None and item.task_id != task_id:
+                continue
+            haystack = f"{item.name} {item.body}".lower()
+            if any(term in haystack for term in terms):
+                matches.append(item)
+        matches.sort(key=lambda item: (item.asserted_at.isoformat(), item.node_id))
+        return [item.model_copy(deep=True) for item in matches[:limit]]
+
+
 class InMemoryStateStore:
     """Convenience facade used by tests that should not touch disk."""
 
@@ -173,6 +232,7 @@ class InMemoryStateStore:
         self.attempts = InMemoryAttemptRepository()
         self.events = InMemoryEventRepository()
         self.contracts = InMemoryContractRepository()
+        self.memory = InMemoryMemoryRepository()
 
     async def delete_project(self, project_id: str) -> None:
         self.projects._projects.pop(project_id,None)
@@ -181,6 +241,8 @@ class InMemoryStateStore:
         self.attempts._attempts = {key:value for key,value in self.attempts._attempts.items() if key[0]!=project_id}
         self.contracts._contracts = {key:value for key,value in self.contracts._contracts.items() if key[0]!=project_id}
         self.events._events = [event for event in self.events._events if event.project_id!=project_id]
+        self.memory._nodes = {key:value for key,value in self.memory._nodes.items() if value.project_id!=project_id}
+        self.memory._edges = {key:value for key,value in self.memory._edges.items() if value.project_id!=project_id}
 
     async def load_snapshot(self, project_id: str) -> ProjectSnapshot | None:
         project = await self.projects.get(project_id)

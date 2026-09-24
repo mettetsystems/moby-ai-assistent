@@ -169,6 +169,148 @@ mobyai --config ./config.yaml config validate
 mobyai --config ./config.yaml models
 ```
 
+## Project memory: how Moby carries useful information forward
+
+A language model can work with only the information supplied in its current
+request. When a coding task needs another attempt, changes agent roles, or resumes
+after a restart, useful details can be lost unless the application supplies them
+again. Sending every previous conversation would consume the space needed for
+source files and tests.
+
+Moby's memory layer is a small, persistent project notebook maintained by the
+Python harness. It records selected information at task boundaries and puts a
+bounded summary into subsequent prompts. It helps the Worker, Orchestrator, and
+Planner carry forward what happened without replaying an entire conversation.
+This is application state: it does not train the model or give the model unlimited
+recall. The harness still controls task status and validates success by running
+the assigned tests.
+
+### What goes into the notebook
+
+Each entry belongs to a project and a task. Entries have five types:
+
+| Type | What Moby records | How it helps |
+| --- | --- | --- |
+| Hypothesis | A failed attempt's error, repair instruction, failure fingerprint, and fingerprints of inspected task files | Carries forward the failed approach and evidence for another attempt; it is not a verified diagnosis |
+| Handoff | The latest retry instruction or escalation summary for a task | Gives the next agent the current direction |
+| Claim | A proposed repair recorded during escalation | Preserves guidance for replanning; differing claims remain recorded for comparison |
+| Outcome | The task's verified harness pass, attempt number, task name, validation commands, and target files | Makes completed work available to tasks that depend on it |
+| Artifact reference | A pointer to an attempt and its test log | Keeps supporting evidence traceable without copying the full log into memory |
+
+The harness writes these records automatically. Agents read the selected prompt
+summary; they do not have a tool to freely edit this memory database. A model's
+claim that it finished a task cannot create a successful outcome without the
+harness's validation passing.
+
+### Why there are several memory layers
+
+The database can retain more information than fits in a prompt. A layer controls
+how much detail is included in the **working set**, the subset sent with a model
+request:
+
+| Layer | Prompt treatment | Typical contents |
+| --- | --- | --- |
+| Core | Body included, with a per-entry length cap | Verified task outcomes |
+| Hot | A short, single-line body summary, capped at 240 characters | Current handoff, repair claims, and active failure hypotheses |
+| Warm | Entry name only | References to attempts and logs |
+| Cold | Excluded from automatic prompt assembly | Hypotheses from tasks that have since passed |
+
+Core entries are considered first, followed by hot and warm entries. Entries that
+do not fit are omitted. An omission notice is included when there is room; even
+that notice must fit the memory budget. Summaries can be shortened further when
+the worker's total context is tight.
+
+Replacing a handoff retracts the old entry and records a `supersedes` relationship.
+A repeated failure fingerprint similarly replaces the previous hypothesis for
+that fingerprint. Different bodies under the same claim name receive a
+`contradicts` relationship. Outcomes and hypotheses can link back to their
+supporting records through `derived_from` relationships. These relationships
+preserve provenance in the database; the prompt renderer does not currently
+display or reason over the full graph. Contradictory claims are not automatically
+resolved into a single fact.
+
+### Example: a failed task, a retry, and a dependent task
+
+Suppose `STEP_001` must create an API module and run its assigned test command.
+
+1. The first attempt fails. Moby records the failure, the instruction used for
+   that attempt, file fingerprints, and a reference to the test log. The
+   Orchestrator receives a bounded working set while deciding the next action.
+2. The Orchestrator requests a repair. Moby replaces the task's handoff with the
+   new instruction. On the retry, the Worker receives the relevant failure
+   memory alongside the task contract, reduced error, and selected source files.
+3. If the task needs replanning, its working set is included in the escalation
+   package supplied to the Planner.
+4. When the harness confirms the tests pass, Moby writes an explicit successful
+   outcome. It retracts the active handoff and moves the task's hypotheses to
+   cold storage. The prior failure text remains historical evidence, rather than
+   becoming the description of the successful outcome.
+5. If `STEP_002` depends on the completed `STEP_001`, its working set can include
+   `STEP_001`'s verified outcome. It does not inherit that task's repair guesses.
+
+This gives later attempts useful continuity. It cannot guarantee that a model
+will interpret the evidence correctly or avoid every repeated mistake.
+
+### How recall stays relevant and bounded
+
+Automatic recall starts with the current task's live entries. During failure
+recovery, the writer and readers use the same persisted harness-error fingerprint
+to select matching hypotheses. A fingerprint is an exact identifier derived from
+normalized error text and validation commands, not semantic understanding of a
+bug. Distinct failures with the same harness error can share a fingerprint.
+
+For cross-task continuity, Moby checks up to the first eight direct dependencies
+in task order. Only dependencies whose status is `passed` contribute a live core
+outcome. These summaries receive at most a quarter of the configured memory
+budget, capped at 500 estimated tokens. Unrelated tasks and other projects are
+not automatically mixed into the working set.
+
+The repository also provides literal full-text search through SQLite FTS5.
+Task-scoped search filters by project and task before applying its result limit,
+and excludes retracted entries. This search API is available to application code;
+the current automatic prompt path uses task and dependency selection, not open-ended
+semantic search. There is no separate memory-search agent or user-facing memory
+browser in this implementation.
+
+### Storage, configuration, and system requirements
+
+Memory lives in the existing SQLite state database at
+`persistence.database_path` (the default is `~/MobyAI/mobyai.db`). Schema migration
+3 adds the node, relationship, and full-text search tables when the store opens.
+Memory persists across application restarts. Existing projects start accumulating
+records as new attempts run; old attempt history is not automatically backfilled.
+Deleting a project's saved state also deletes its memory entries and relationships.
+Full test logs remain separate files in the project workspace.
+
+The default configuration is:
+
+```yaml
+context:
+  worker_token_budget: 48000
+  memory_token_budget: 2000
+```
+
+`memory_token_budget` is a ceiling for the assembled working set. For a Worker
+request it is **part of**, not additional to, `worker_token_budget`. Required task
+evidence takes priority, memory is reserved before source-file packing, and the
+reported token count includes memory. The Orchestrator and Planner receive the
+bounded memory block alongside their other prompt content. Estimates use Moby's
+existing character-based estimator; they are not exact model-tokenizer counts.
+
+This layer uses the existing Python process and SQLite with FTS5 support. It needs
+no additional inference model, embedding service, model download, or dedicated GPU
+allocation. Storage and retrieval use CPU and disk; included memory still uses
+part of the model's prompt-processing capacity. Lowering the memory budget trades
+recall detail for more available worker context. The configuration requires a
+positive budget and currently has no separate memory-disable switch.
+
+Records are retained until their project is deleted; cooling or retracting an
+entry does not remove it from disk. Memory can contain error text, repair guidance,
+paths, and file fingerprints, so it should be treated as part of the project's
+saved data. It supplements live source inspection, task contracts, and tests;
+recorded outcomes describe what passed at that time and are not proof that files
+have remained unchanged since then.
+
 ## Starting inference servers
 
 External mode (`mobyai setup --preset external`) expects Planner, Orchestrator, and Worker OpenAI-compatible servers already listening on the configured ports. The **setup default** is managed llama.cpp.

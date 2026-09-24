@@ -19,3 +19,4 @@ class EscalationPackage(BaseModel):
     affected_files: list[str] = Field(default_factory=list)
     last_error: str | None = None
     decision_summary: str | None = None
+    shared_memory: str = ""

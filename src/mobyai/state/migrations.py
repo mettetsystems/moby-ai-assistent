@@ -101,7 +101,67 @@ CREATE INDEX IF NOT EXISTS idx_module_contracts_project
     ON module_contracts (project_id, path);
 """
 
-MIGRATIONS: tuple[tuple[int, str], ...] = ((1, SCHEMA_V1), (2, SCHEMA_V2))
+SCHEMA_V3 = """
+CREATE TABLE IF NOT EXISTS memory_nodes (
+    node_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    layer TEXT NOT NULL,
+    name TEXT NOT NULL,
+    body TEXT NOT NULL,
+    fingerprint TEXT,
+    asserted_at TEXT NOT NULL,
+    retracted_at TEXT,
+    FOREIGN KEY (project_id) REFERENCES projects(project_id)
+);
+
+CREATE TABLE IF NOT EXISTS memory_edges (
+    edge_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    asserted_at TEXT NOT NULL,
+    retracted_at TEXT,
+    FOREIGN KEY (project_id) REFERENCES projects(project_id),
+    FOREIGN KEY (source_id) REFERENCES memory_nodes(node_id),
+    FOREIGN KEY (target_id) REFERENCES memory_nodes(node_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_nodes_live
+    ON memory_nodes (project_id, task_id, retracted_at);
+
+CREATE INDEX IF NOT EXISTS idx_memory_edges_project
+    ON memory_edges (project_id, kind);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_search USING fts5(
+    node_id UNINDEXED,
+    name,
+    body,
+    content='memory_nodes',
+    content_rowid='rowid'
+);
+
+CREATE TRIGGER IF NOT EXISTS memory_nodes_ai AFTER INSERT ON memory_nodes BEGIN
+    INSERT INTO memory_search(rowid, node_id, name, body)
+    VALUES (new.rowid, new.node_id, new.name, new.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_nodes_ad AFTER DELETE ON memory_nodes BEGIN
+    INSERT INTO memory_search(memory_search, rowid, node_id, name, body)
+    VALUES ('delete', old.rowid, old.node_id, old.name, old.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_nodes_au AFTER UPDATE ON memory_nodes BEGIN
+    INSERT INTO memory_search(memory_search, rowid, node_id, name, body)
+    VALUES ('delete', old.rowid, old.node_id, old.name, old.body);
+    INSERT INTO memory_search(rowid, node_id, name, body)
+    VALUES (new.rowid, new.node_id, new.name, new.body);
+END;
+"""
+
+MIGRATIONS: tuple[tuple[int, str], ...] = ((1, SCHEMA_V1), (2, SCHEMA_V2), (3, SCHEMA_V3))
 
 
 def apply_migrations(connection: sqlite3.Connection) -> None:

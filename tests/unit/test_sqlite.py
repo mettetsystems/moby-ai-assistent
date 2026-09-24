@@ -76,9 +76,12 @@ async def test_initialize_creates_schema(tmp_path: Path) -> None:
         "checkpoints",
         "events",
         "module_contracts",
+        "memory_nodes",
+        "memory_edges",
+        "memory_search",
     }.issubset(tables)
     versions = [row[0] for row in conn.execute("SELECT version FROM schema_migrations")]
-    assert versions == [1, 2]
+    assert versions == [1, 2, 3]
     assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
     conn.close()
 

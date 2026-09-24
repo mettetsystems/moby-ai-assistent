@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sqlite3
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
@@ -14,6 +15,7 @@ from mobyai.models.attempt import AttemptResult, TaskAttempt
 from mobyai.models.checkpoint import Checkpoint, CheckpointKind
 from mobyai.models.contract import ModuleContract
 from mobyai.models.event import EventRecord
+from mobyai.models.memory import MemoryEdge, MemoryEdgeKind, MemoryKind, MemoryLayer, MemoryNode
 from mobyai.models.project import Project, ProjectState
 from mobyai.models.snapshot import ProjectSnapshot
 from mobyai.models.task import Task, TaskStatus
@@ -165,6 +167,44 @@ def _event_from_row(row: sqlite3.Row) -> EventRecord:
         attempt=row["attempt"],
         payload=_load_json(row["payload"], {}),
     )
+
+
+def _optional_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    return _parse_dt(value)
+
+
+def _memory_node_from_row(row: sqlite3.Row) -> MemoryNode:
+    return MemoryNode(
+        node_id=row["node_id"],
+        project_id=row["project_id"],
+        task_id=row["task_id"],
+        kind=MemoryKind(row["kind"]),
+        layer=MemoryLayer(row["layer"]),
+        name=row["name"],
+        body=row["body"],
+        fingerprint=row["fingerprint"],
+        asserted_at=_parse_dt(row["asserted_at"]),
+        retracted_at=_optional_dt(row["retracted_at"]),
+    )
+
+
+def _memory_edge_from_row(row: sqlite3.Row) -> MemoryEdge:
+    return MemoryEdge(
+        edge_id=row["edge_id"],
+        project_id=row["project_id"],
+        source_id=row["source_id"],
+        target_id=row["target_id"],
+        kind=MemoryEdgeKind(row["kind"]),
+        asserted_at=_parse_dt(row["asserted_at"]),
+        retracted_at=_optional_dt(row["retracted_at"]),
+    )
+
+
+def _fts_query(text: str) -> str:
+    terms = re.findall(r"[A-Za-z0-9_]+", text)
+    return " OR ".join(f'"{term}"' for term in terms[:12])
 
 
 def _contract_from_row(row: sqlite3.Row) -> ModuleContract:
@@ -590,6 +630,144 @@ class SqliteContractRepository:
         return await self._db.run(query)
 
 
+class SqliteMemoryRepository:
+    def __init__(self, database: SqliteDatabase) -> None:
+        self._db = database
+
+    async def insert_node(self, node: MemoryNode) -> None:
+        def write(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """
+                INSERT INTO memory_nodes (
+                    node_id, project_id, task_id, kind, layer, name, body,
+                    fingerprint, asserted_at, retracted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    node.node_id,
+                    node.project_id,
+                    node.task_id,
+                    node.kind.value,
+                    node.layer.value,
+                    node.name,
+                    node.body,
+                    node.fingerprint,
+                    _dt_to_str(node.asserted_at),
+                    _dt_to_str(node.retracted_at) if node.retracted_at else None,
+                ),
+            )
+            conn.commit()
+
+        await self._db.run(write)
+
+    async def update_node(self, node: MemoryNode) -> None:
+        def write(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """
+                UPDATE memory_nodes SET
+                    project_id = ?, task_id = ?, kind = ?, layer = ?, name = ?,
+                    body = ?, fingerprint = ?, asserted_at = ?, retracted_at = ?
+                WHERE node_id = ?
+                """,
+                (
+                    node.project_id,
+                    node.task_id,
+                    node.kind.value,
+                    node.layer.value,
+                    node.name,
+                    node.body,
+                    node.fingerprint,
+                    _dt_to_str(node.asserted_at),
+                    _dt_to_str(node.retracted_at) if node.retracted_at else None,
+                    node.node_id,
+                ),
+            )
+            conn.commit()
+
+        await self._db.run(write)
+
+    async def get_node(self, node_id: str) -> MemoryNode | None:
+        def query(conn: sqlite3.Connection) -> MemoryNode | None:
+            row = conn.execute(
+                "SELECT * FROM memory_nodes WHERE node_id = ?", (node_id,)
+            ).fetchone()
+            return _memory_node_from_row(row) if row is not None else None
+
+        return await self._db.run(query)
+
+    async def list_nodes(
+        self, project_id: str, *, task_id: str | None = None, live_only: bool = True
+    ) -> list[MemoryNode]:
+        def query(conn: sqlite3.Connection) -> list[MemoryNode]:
+            sql = "SELECT * FROM memory_nodes WHERE project_id = ?"
+            params: list[Any] = [project_id]
+            if task_id is not None:
+                sql += " AND task_id = ?"
+                params.append(task_id)
+            if live_only:
+                sql += " AND retracted_at IS NULL"
+            sql += " ORDER BY asserted_at ASC, node_id ASC"
+            rows = conn.execute(sql, params).fetchall()
+            return [_memory_node_from_row(row) for row in rows]
+
+        return await self._db.run(query)
+
+    async def insert_edge(self, edge: MemoryEdge) -> None:
+        def write(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """
+                INSERT INTO memory_edges (
+                    edge_id, project_id, source_id, target_id, kind, asserted_at, retracted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    edge.edge_id,
+                    edge.project_id,
+                    edge.source_id,
+                    edge.target_id,
+                    edge.kind.value,
+                    _dt_to_str(edge.asserted_at),
+                    _dt_to_str(edge.retracted_at) if edge.retracted_at else None,
+                ),
+            )
+            conn.commit()
+
+        await self._db.run(write)
+
+    async def list_edges(self, project_id: str, *, live_only: bool = True) -> list[MemoryEdge]:
+        def query(conn: sqlite3.Connection) -> list[MemoryEdge]:
+            sql = "SELECT * FROM memory_edges WHERE project_id = ?"
+            params: list[Any] = [project_id]
+            if live_only:
+                sql += " AND retracted_at IS NULL"
+            sql += " ORDER BY asserted_at ASC, edge_id ASC"
+            rows = conn.execute(sql, params).fetchall()
+            return [_memory_edge_from_row(row) for row in rows]
+
+        return await self._db.run(query)
+
+    async def search(self, project_id: str, query: str, *, task_id: str | None = None, limit: int = 20) -> list[MemoryNode]:
+        match = _fts_query(query)
+
+        def run(conn: sqlite3.Connection) -> list[MemoryNode]:
+            if not match or limit <= 0:
+                return []
+            rows = conn.execute(
+                """
+                SELECT n.* FROM memory_nodes AS n
+                JOIN memory_search AS s ON s.node_id = n.node_id
+                WHERE memory_search MATCH ? AND n.project_id = ? AND n.retracted_at IS NULL
+                  AND (? IS NULL OR n.task_id = ?)
+                ORDER BY n.asserted_at ASC, n.node_id ASC
+                LIMIT ?
+                """,
+                (match, project_id, task_id, task_id, limit),
+            ).fetchall()
+            return [_memory_node_from_row(row) for row in rows]
+
+        return await self._db.run(run)
+
+
 class SqliteStateStore:
     """Durable store. Reconstructs a project by reading tables, not model context."""
 
@@ -602,11 +780,21 @@ class SqliteStateStore:
         self.attempts = SqliteAttemptRepository(self._db)
         self.events = SqliteEventRepository(self._db)
         self.contracts = SqliteContractRepository(self._db)
+        self.memory = SqliteMemoryRepository(self._db)
 
     async def delete_project(self, project_id: str) -> None:
         def delete(conn):
             with conn:
-                for table in ('task_attempts','checkpoints','module_contracts','events','tasks','projects'):
+                for table in (
+                    'memory_edges',
+                    'memory_nodes',
+                    'task_attempts',
+                    'checkpoints',
+                    'module_contracts',
+                    'events',
+                    'tasks',
+                    'projects',
+                ):
                     conn.execute(f'DELETE FROM {table} WHERE project_id=?',(project_id,))
         await self._db.run(delete)
 

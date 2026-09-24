@@ -83,6 +83,7 @@ async def execute_task(
     workspace: Workspace,
     *,
     token_budget: int = 48000,
+    memory_token_budget: int = 2000,
     max_turns: int = 8,
     command_timeout_seconds: int = 600,
     max_output_bytes: int = 1_048_576,
@@ -127,6 +128,7 @@ async def execute_task(
         filesystem,
         store,
         prefer_import_contracts=prefer_import_contracts,
+        memory_token_budget=memory_token_budget,
     )
 
     project, task, attempt = await _enter_working(
@@ -138,6 +140,7 @@ async def execute_task(
     changed_files: list[str] = []
     references_used: list[str] = []
     inference_error: str | None = None
+    remediation = extra_instruction or ""
 
     try:
         if services is not None:
@@ -321,6 +324,20 @@ async def execute_task(
             timestamp,
             {"result": attempt_result.value, "error": last_error},
         )
+
+    from mobyai.memory.record import record_attempt_memory
+
+    await record_attempt_memory(
+        store,
+        project_id=project.project_id,
+        task=task,
+        attempt=finished,
+        passed=succeeded,
+        error=last_error or "",
+        instruction=remediation,
+        workspace=workspace,
+        now=timestamp,
+    )
 
     return TaskExecutionResult(
         project=project,

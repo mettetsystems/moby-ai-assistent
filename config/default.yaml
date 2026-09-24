@@ -26,6 +26,7 @@ runtime:
 
 context:
   worker_token_budget: 48000
+  memory_token_budget: 2000
   log_tail_lines: 150
   prefer_import_contracts: true
 

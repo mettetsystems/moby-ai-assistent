@@ -837,6 +837,7 @@ async def _execute_project_inner(
                 max_task_attempts=runtime.config.runtime.max_task_attempts,
                 max_steps=steps,
                 token_budget=runtime.config.context.worker_token_budget,
+                memory_token_budget=runtime.config.context.memory_token_budget,
                 max_turns=runtime.config.runtime.max_worker_turns,
                 command_timeout_seconds=runtime.config.runtime.command_timeout_seconds,
                 planner=runtime.planner,

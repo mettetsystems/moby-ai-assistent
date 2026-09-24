@@ -93,6 +93,7 @@ async def advance_project(
     *,
     max_task_attempts: int = 2,
     token_budget: int = 48000,
+    memory_token_budget: int = 2000,
     max_turns: int = 8,
     command_timeout_seconds: int = 600,
     now: datetime | None = None,
@@ -110,6 +111,7 @@ async def advance_project(
             max_task_attempts=max_task_attempts,
             now=timestamp,
             services=services,
+            memory_token_budget=memory_token_budget,
         )
     if project.state not in _DISPATCH_STATES:
         raise OrchestrationError(
@@ -138,6 +140,7 @@ async def advance_project(
         worker,
         workspace,
         token_budget=token_budget,
+        memory_token_budget=memory_token_budget,
         max_turns=max_turns,
         command_timeout_seconds=command_timeout_seconds,
         now=timestamp,
@@ -164,6 +167,7 @@ async def advance_project(
         now=timestamp,
         execution=execution,
         services=services,
+        memory_token_budget=memory_token_budget,
     )
 
 
@@ -177,6 +181,7 @@ async def run_project(
     max_task_attempts: int = 2,
     max_steps: int | None = None,
     token_budget: int = 48000,
+    memory_token_budget: int = 2000,
     max_turns: int = 8,
     command_timeout_seconds: int = 600,
     now: datetime | None = None,
@@ -242,6 +247,7 @@ async def run_project(
                 workspace,
                 max_task_attempts=max_task_attempts,
                 token_budget=token_budget,
+                memory_token_budget=memory_token_budget,
                 max_turns=max_turns,
                 command_timeout_seconds=command_timeout_seconds,
                 now=timestamp,
@@ -289,6 +295,7 @@ async def resolve_validation_failure(
     now: datetime | None = None,
     execution: TaskExecutionResult | None = None,
     services: InferenceServiceManager | None = None,
+    memory_token_budget: int = 2000,
 ) -> OrchestrationStep:
     """VALIDATING → RETRYING or ESCALATING. Attempt counts are not model-owned."""
     timestamp = now or datetime.now(UTC)
@@ -335,8 +342,18 @@ async def resolve_validation_failure(
         await _record_event(store,project,task.task_id,task.attempt_count,'cached_repair_failed',timestamp,
                             {'references_supplied':offered.payload.get('references',[]),
                              'worker_reported_urls':used_urls})
-    from mobyai.engine.recovery_evidence import evidence_for, record_decision
+    from mobyai.engine.recovery_evidence import evidence_for, fingerprint, record_decision
+    from mobyai.memory.assembly import working_set_for
     recovery_evidence = await evidence_for(store, project.project_id, task, workspace, evidence)
+    # Memory is keyed by the persisted harness error, not its rendered log.
+    memory_signature = fingerprint(project.last_error or "", task.test_commands)
+    shared_memory = await working_set_for(
+        store,
+        project.project_id,
+        task.task_id,
+        failure_signature=memory_signature,
+        token_budget=memory_token_budget,
+    )
     decision = await _ask_orchestrator(
         orchestrator,
         project,
@@ -348,6 +365,7 @@ async def resolve_validation_failure(
         cache_evidence=candidates,
         recovery_evidence=recovery_evidence,
         reference_use=({"supplied":offered.payload.get("references",[]),"reported_used":used_urls} if offered else None),
+        shared_memory=shared_memory,
     )
     if task.attempt_count >= 2 and diagnosis.sampling_eligible:
         if candidates and decision.cached_references_sufficient and decision.next_payload is not None:
@@ -375,12 +393,22 @@ async def resolve_validation_failure(
         paused = await pause_interrupted(store, project.project_id)
         return OrchestrationStep(project=paused, decision=OrchestratorDecision.BLOCKED, execution=execution)
     if target is ProjectState.RETRYING:
-        result = await _retry(project, task, store, decision, timestamp)
+        result = await _retry(
+            project, task, store, decision, timestamp, memory_token_budget=memory_token_budget
+        )
         result.execution = execution
         result.defer_sampling = task.attempt_count >= 2
         return result
     result = await _escalate(
-        project, task, store, workspace, decision, reduced, timestamp
+        project,
+        task,
+        store,
+        workspace,
+        decision,
+        reduced,
+        timestamp,
+        failure_signature=memory_signature,
+        memory_token_budget=memory_token_budget,
     )
     result.execution = execution
     result.defer_sampling = task.attempt_count >= 2
@@ -400,6 +428,7 @@ async def _ask_orchestrator(
     cache_evidence: list | None = None,
     recovery_evidence: dict | None = None,
     reference_use: dict | None = None,
+    shared_memory: str = "",
 ) -> OrchestratorResult:
     try:
         if services is not None:
@@ -411,7 +440,7 @@ async def _ask_orchestrator(
             required_decision=required,
             attempt_count=task.attempt_count,
             max_task_attempts=max_task_attempts,
-            reduced_error=(reduced.render() if reduced is not None else (project.last_error or "")) + ("\nRECOVERY EVIDENCE: " + json.dumps(recovery_evidence) if recovery_evidence else "") + ("\nUNTRUSTED LOCAL CACHE CANDIDATES: " + json.dumps(cache_evidence) if cache_evidence else "") + ("\nFAILED REFERENCE-ASSISTED ATTEMPT: " + json.dumps(reference_use) if reference_use else ""),
+            reduced_error=(reduced.render() if reduced is not None else (project.last_error or "")) + ("\nRECOVERY EVIDENCE: " + json.dumps(recovery_evidence) if recovery_evidence else "") + ("\n" + shared_memory if shared_memory else "") + ("\nUNTRUSTED LOCAL CACHE CANDIDATES: " + json.dumps(cache_evidence) if cache_evidence else "") + ("\nFAILED REFERENCE-ASSISTED ATTEMPT: " + json.dumps(reference_use) if reference_use else ""),
         )
     except _ORCHESTRATOR_FAILURES as exc:
         target = (
@@ -441,6 +470,8 @@ async def _retry(
     store: StateStore,
     decision: OrchestratorResult,
     timestamp: datetime,
+    *,
+    memory_token_budget: int = 2000,
 ) -> OrchestrationStep:
     instruction = (
         decision.next_payload.instruction if decision.next_payload is not None else ""
@@ -462,6 +493,15 @@ async def _retry(
         now=timestamp,
     )
     await store.projects.save(project)
+    from mobyai.memory.record import record_retry_memory
+    shared_memory = await record_retry_memory(
+        store,
+        project_id=project.project_id,
+        task_id=task.task_id,
+        instruction=instruction,
+        now=timestamp,
+        token_budget=memory_token_budget,
+    )
     await _checkpoint(
         store,
         project,
@@ -474,6 +514,7 @@ async def _retry(
             "instruction": instruction,
             "required_files": required_files,
             "decision_summary": decision.decision_summary,
+            "shared_memory": shared_memory,
         },
     )
     await _record_event(
@@ -500,6 +541,9 @@ async def _escalate(
     decision: OrchestratorResult,
     reduced: ReducedLog | None,
     timestamp: datetime,
+    *,
+    failure_signature: str | None = None,
+    memory_token_budget: int = 2000,
 ) -> OrchestrationStep:
     graph = TaskGraph(await store.tasks.list_for_project(project.project_id))
     graph.set_status(task.task_id, TaskStatus.FAILED)
@@ -513,6 +557,18 @@ async def _escalate(
     ]
     if reduced is not None and not logs:
         logs = [reduced]
+    from mobyai.memory.record import record_escalation_memory
+    instruction = decision.next_payload.instruction if decision.next_payload is not None else ""
+    shared_memory = await record_escalation_memory(
+        store,
+        project_id=project.project_id,
+        task_id=task.task_id,
+        summary=decision.decision_summary,
+        instruction=instruction,
+        now=timestamp,
+        failure_signature=failure_signature,
+        token_budget=memory_token_budget,
+    )
     package = EscalationPackage(
         failed_task=task,
         attempts=attempts,
@@ -523,6 +579,7 @@ async def _escalate(
         affected_files=_affected_files(task, attempts),
         last_error=project.last_error,
         decision_summary=decision.decision_summary,
+        shared_memory=shared_memory,
     )
     project = ProjectStateMachine.transition(
         project.model_copy(update={"current_task_id": task.task_id}),

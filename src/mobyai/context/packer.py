@@ -48,6 +48,7 @@ class ContextPacker:
         *,
         log_reducer: LogReducer | None = None,
         default_token_budget: int = 48000,
+        memory_token_budget: int = 2000,
         constraints: Sequence[str] | None = None,
         prefer_import_contracts: bool = True,
     ) -> None:
@@ -55,6 +56,7 @@ class ContextPacker:
         self._store = store
         self._log_reducer = log_reducer or LogReducer()
         self.default_token_budget = default_token_budget
+        self.memory_token_budget = memory_token_budget
         self.constraints = tuple(constraints) if constraints is not None else DEFAULT_CONSTRAINTS
         self.prefer_import_contracts = prefer_import_contracts
 
@@ -91,6 +93,15 @@ class ContextPacker:
             item.path: item
             for item in await self._store.contracts.list_for_project(project_id)
         }
+        from mobyai.engine.recovery_evidence import fingerprint
+        from mobyai.memory.assembly import working_set_for
+
+        # Use the same persisted harness error as record_attempt_memory.
+        signature = fingerprint(project.last_error, task.test_commands) if project.last_error else None
+        shared_memory = await working_set_for(
+            self._store, project_id, task_id,
+            failure_signature=signature, token_budget=self.memory_token_budget,
+        )
         return await self.pack(
             project,
             task,
@@ -99,6 +110,7 @@ class ContextPacker:
             remediation_instruction=remediation_instruction,
             dependency_contracts=dependencies,
             contracts=contracts,
+            shared_memory=shared_memory,
         )
 
     async def pack(
@@ -111,6 +123,7 @@ class ContextPacker:
         remediation_instruction: str | None = None,
         dependency_contracts: list[dict[str, object]] | None = None,
         contracts: Mapping[str, ModuleContract] | None = None,
+        shared_memory: str = "",
     ) -> WorkerContext:
         budget = token_budget if token_budget is not None else self.default_token_budget
         if budget < 1:
@@ -139,6 +152,12 @@ class ContextPacker:
         if remaining < 0:
             context = self._shrink_core(context, budget)
             remaining = budget - estimate_tokens(context.render())
+
+        # Task evidence has priority; reserve memory before packing source files.
+        memory_budget = min(self.memory_token_budget, max(0, remaining - 2))
+        memory, _ = truncate_to_tokens(shared_memory, memory_budget)
+        context = context.model_copy(update={"shared_memory": memory})
+        remaining = budget - estimate_tokens(context.render())
 
         packed: list[PackedFile] = []
         omitted: list[str] = []

@@ -399,6 +399,9 @@ Reduced test errors:
 Failed-task attempts (no chat history):
 {attempts}
 
+Shared memory (layered working set; cold nodes omitted):
+{shared_memory}
+
 Current DAG (do not rewrite PASSED tasks):
 {dag}
 

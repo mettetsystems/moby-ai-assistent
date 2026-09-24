@@ -45,6 +45,7 @@ class WorkerContext(BaseModel):
     files: list[PackedFile] = Field(default_factory=list)
     reduced_error: ReducedLog | None = None
     remediation_instruction: str | None = None
+    shared_memory: str = ""
     omitted_paths: list[str] = Field(default_factory=list)
     token_budget: int = Field(ge=1)
     token_count: int = Field(ge=0)
@@ -81,6 +82,8 @@ class WorkerContext(BaseModel):
             sections.append(
                 "## Previous attempt error\n" + self.reduced_error.render()
             )
+        if self.shared_memory:
+            sections.append(self.shared_memory)
         for packed in self.files:
             flags: list[str] = []
             if packed.missing:
