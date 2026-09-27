@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from mobyai.records.capture import operation
+
 from mobyai.tracing import traced
 
 from datetime import UTC, datetime
@@ -47,6 +49,7 @@ class ReplanResult:
 
 
 @traced("planner.replan")
+@operation("planner", "plan")
 async def replan_project(
     project: Project,
     store: StateStore,

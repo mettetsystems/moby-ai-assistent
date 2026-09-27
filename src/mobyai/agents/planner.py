@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from mobyai.records.capture import emit
+
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -49,6 +51,7 @@ class PlannerAgent:
         max_inspect_turns: int = 3,
     ) -> None:
         self._generator = generator
+        self.prompts = None
         self._max_plan_repairs = (
             generator.max_repair_attempts if max_plan_repairs is None else max(max_plan_repairs, 0)
         )
@@ -63,8 +66,10 @@ class PlannerAgent:
         inspector: ToolDispatcher | None = None,
         module_contracts: Sequence[str] = (),
     ) -> PlannerOutput:
+        if self.prompts is not None:
+            self.prompts.begin_attempt()
         messages = [
-            ChatMessage(role="system", content=SYSTEM_PROMPT),
+            ChatMessage(role="system", content=(self.prompts.get("planner") if self.prompts else SYSTEM_PROMPT)),
             ChatMessage(
                 role="user",
                 content=_render_user(
@@ -104,9 +109,13 @@ class PlannerAgent:
                 ]
                 continue
             if turn.plan is not None:
+                await emit("plan_proposed", {"proposal": turn.plan.model_dump(mode="json")})
                 try:
-                    return validate_planner_output(turn.plan)
+                    validated = validate_planner_output(turn.plan)
+                    await emit("plan_validated", {"proposal": turn.plan.model_dump(mode="json")})
+                    return validated
                 except PlanValidationError as exc:
+                    await emit("plan_rejected", {"error": str(exc), "proposal": turn.model_dump(mode="json")})
                     last_error = exc
                     if plan_repairs >= self._max_plan_repairs:
                         break
@@ -148,7 +157,7 @@ class PlannerAgent:
     ) -> DAGPatch:
         failed_id = package.failed_task.task_id
         messages = [
-            ChatMessage(role="system", content=REPLAN_SYSTEM_PROMPT),
+            ChatMessage(role="system", content=(self.prompts.get("replan") if self.prompts else REPLAN_SYSTEM_PROMPT)),
             ChatMessage(
                 role="user",
                 content=_render_replan(
@@ -193,9 +202,13 @@ class PlannerAgent:
                 ]
                 continue
             if turn.patch is not None:
+                await emit("plan_proposed", {"proposal": turn.patch.model_dump(mode="json")})
                 try:
-                    return validate_dag_patch(turn.patch, tasks, failed_task_id=failed_id)
+                    validated = validate_dag_patch(turn.patch, tasks, failed_task_id=failed_id)
+                    await emit("plan_validated", {"proposal": turn.patch.model_dump(mode="json")})
+                    return validated
                 except PlanValidationError as exc:
+                    await emit("plan_rejected", {"error": str(exc), "proposal": turn.model_dump(mode="json")})
                     last_error = exc
                     if plan_repairs >= self._max_plan_repairs:
                         break

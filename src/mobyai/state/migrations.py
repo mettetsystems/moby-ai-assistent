@@ -161,7 +161,9 @@ CREATE TRIGGER IF NOT EXISTS memory_nodes_au AFTER UPDATE ON memory_nodes BEGIN
 END;
 """
 
-MIGRATIONS: tuple[tuple[int, str], ...] = ((1, SCHEMA_V1), (2, SCHEMA_V2), (3, SCHEMA_V3))
+from mobyai.records.repository import SCHEMA as SCHEMA_V4
+
+MIGRATIONS: tuple[tuple[int, str], ...] = ((1, SCHEMA_V1), (2, SCHEMA_V2), (3, SCHEMA_V3), (4, SCHEMA_V4))
 
 
 def apply_migrations(connection: sqlite3.Connection) -> None:

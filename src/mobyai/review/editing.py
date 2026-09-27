@@ -1,4 +1,5 @@
 """Human plan edits preserve the project, files, completed tasks and audit history."""
+from mobyai.records.capture import operation, emit
 import asyncio
 import json
 from datetime import UTC, datetime
@@ -42,7 +43,9 @@ async def snapshot(store, project):
             'task_statuses':{t.task_id:t.status.value for t in tasks}}
 
 
+@operation("human", "plan")
 async def save(runtime, project, payload):
+    await emit("plan_proposed", {"proposal": payload.get("plan"), "reason": payload.get("reason")})
     current = await snapshot(runtime.store, project)
     if payload.get('version') != current['version']:
         raise ValueError('Project or codebase changed. Reload the plan before saving')
@@ -89,4 +92,5 @@ async def save(runtime, project, payload):
     await runtime.store.projects.save(project)
     minutes.write(directory/'proposal.json',document)
     await event(runtime.store,project,'review_plan_edited',{'revision':document['revision'],'reason':reason.strip()})
+    await emit('plan_applied', {'proposal': data, 'tasks': [t.model_dump(mode='json') for t in updated]}, reason=reason.strip())
     return {'revision':document['revision'],'message':'Plan saved. Review and approve it before continuing.'}

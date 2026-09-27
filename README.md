@@ -8,6 +8,11 @@ This is not a chat-based coding assistant. Language models propose structured ac
 
 Phase 1–12 are complete (domain model, SQLite, execution, inference, Planner, ContextPacker, Worker, Orchestrator, DAG-branch replan, GPU service manager, CLI, end-to-end fixture). The MVP harness is internally consistent. Live GPU runs are operator-side.
 
+Moby now also provides layered project memory and durable coding-run evidence.
+The records foundation captures run, step-attempt, and plan history for export and
+future research. It does not implement an agentic learning engine or automatically
+turn successful runs into rules.
+
 ## Setup (do this first)
 
 The full walkthrough — prerequisites, venv, every YAML field, external vs managed servers, doctor, and first project — is **[docs/setup.md](docs/setup.md)**.
@@ -142,6 +147,8 @@ by its absolute path from another directory.
 - [`docs/setup.md`](docs/setup.md) — operator install and config walkthrough
 - [`docs/implementation-plan.md`](docs/implementation-plan.md) — living architecture and phase tracker
 - [`docs/implementation-notes.md`](docs/implementation-notes.md) — design decisions per subsystem
+- [`docs/agentic-memory-report.md`](docs/agentic-memory-report.md) — project memory architecture, lifecycle, and limitations
+- [`docs/run-records.md`](docs/run-records.md) — durable run records, evidence capture, storage, and JSON exports
 - [`scripts/setup.sh`](scripts/setup.sh) — interactive first-run script
 - [`config/default.yaml`](config/default.yaml) — reference configuration (external endpoints)
 - [`config/examples/dual_gpu.yaml`](config/examples/dual_gpu.yaml) — dual-GPU device map
@@ -170,6 +177,14 @@ mobyai --config ./config.yaml models
 ```
 
 ## Project memory: how Moby carries useful information forward
+
+Project memory selects compact information for agent prompts. The
+[durable coding-run records](#durable-coding-run-records) described below separately
+preserve execution evidence for inspection and future research; their full history
+is not automatically injected into prompts.
+
+For a standalone explanation of the architecture, lifecycle, retrieval rules, and
+limitations, see the [Agentic Memory Report](docs/agentic-memory-report.md).
 
 A language model can work with only the information supplied in its current
 request. When a coding task needs another attempt, changes agent roles, or resumes
@@ -310,6 +325,115 @@ paths, and file fingerprints, so it should be treated as part of the project's
 saved data. It supplements live source inspection, task contracts, and tests;
 recorded outcomes describe what passed at that time and are not proof that files
 have remained unchanged since then.
+
+## Durable coding-run records
+
+Moby automatically records what a coding project requested, what agents proposed,
+what the harness executed, and what validation observed. This provides an evidence
+foundation for future agentic-learning research while keeping the current model
+and decision-making behavior unchanged.
+
+### Three linked record types
+
+| Record | Boundary | Captured information |
+| --- | --- | --- |
+| `RunRecord` | One project lifecycle, across pauses, resumes, retries, and replans | Original objective, baseline state, lifecycle transitions, execution boundaries, final project result, and links to the plan and attempts |
+| `StepRunRecord` | One worker task attempt | Initial task specification and effective prompt, remediation context, every captured worker turn and model call, tool arguments/results, edit payloads, commands, validation, and attempt outcome |
+| `PlanRecord` | One project lifecycle with ordered revision history | Initial planning and replanning requests, proposals, rejected outputs, validation errors, applied plans, human edits and approvals, and final-pass additions |
+
+Each record has a UUID, UTC timestamps, schema version, and capture-completeness
+status. History entries also have individual IDs and project-wide sequence numbers.
+Plan revision links associate worker attempts with the plan they were executing.
+Resuming the same unfinished attempt retains its StepRunRecord ID; a new attempt
+gets a new record.
+
+Step outcomes distinguish `in_progress`, `pass`, `fail`, `error`, `timeout`, and
+`interrupted`. A worker's claim of success is not a passing result: the harness's
+validation determines the outcome. Likewise, a validated or applied plan is
+distinct from human approval and from successful implementation.
+
+### What execution capture includes
+
+Capture happens at model-request, tool-dispatch, command, and validation boundaries.
+Effective prompts and sampling settings are recorded after settings are applied,
+including schema-repair requests and planner inspection activity. Later changes in
+the Settings window do not rewrite earlier prompt snapshots.
+
+Action-start and result entries are linked, so an interrupted action can remain
+explicitly unresolved. Records preserve observed requests, responses, and outcomes;
+they do not reconstruct missing internal reasoning or infer unobserved file changes
+inside shell commands. Existing output limits still apply, with truncation marked.
+Recording works through direct engine calls as well as the CLI, and does not require
+MLflow. Existing `mobyMinutes` reports and tracing continue to operate.
+
+### Export JSON records
+
+Replace `PROJECT_ID` with your saved project's ID and choose a new destination:
+
+```bash
+mobyai records export PROJECT_ID --output ./coding-run-export
+```
+
+The command exports evidence without running models or executing project tools:
+
+```text
+coding-run-export/
+  manifest.json
+  run.json
+  plan.json
+  steps/
+    <step-record-uuid>.json
+  artifacts/
+    <hash-prefix>/<sha256>
+  schemas/
+    RunRecord.schema.json
+    StepRunRecord.schema.json
+    PlanRecord.schema.json
+```
+
+Large payloads are referenced artifacts rather than inline copies in every record.
+The manifest includes export time, file sizes, SHA-256 hashes, completeness, and
+missing or corrupted artifacts. The included JSON Schemas support downstream
+validation. Exports use a consistent database snapshot and verify artifact hashes.
+The destination must not already exist; exports never overwrite an existing bundle.
+
+### Persistence and incomplete history
+
+SQLite migration **4** adds the research-record tables when the state store opens;
+the project-memory tables remain in migration 3. Canonical records are committed
+incrementally to `persistence.database_path`. Large payloads are stored by content
+hash in an adjacent directory: for `~/MobyAI/mobyai.db`, that is
+`~/MobyAI/mobyai.db.records/`. Identical artifacts are reused. No additional model,
+GPU allocation, vector database, or message broker is required, but detailed capture
+uses additional local disk space and performs local persistence writes.
+
+Capture completeness is separate from task success:
+
+- **`complete`** — no detected gaps in the captured interval.
+- **`partial`** — known missing history, capture failures, or unavailable artifacts.
+- **`unknown`** — some boundaries have no observed completion; work may still be
+  active or may have been interrupted.
+
+Research-recording failures produce warnings and allow coding to continue. Existing
+execution-state persistence failures retain their normal behavior. Missing or corrupt
+artifacts produce an explicitly partial export rather than fabricated evidence.
+Existing projects capture forward with partial-history labeling; old activity is
+not automatically reconstructed into new records.
+
+Deleting saved project state removes its canonical research records and artifacts
+that no other project references. Independent exports remain untouched. Captured
+prompts, code, and output are project data; capture is not a general secret-redaction
+system. There is no automatic retention policy in this phase.
+
+### Boundary of the learning foundation
+
+These records are episodic evidence: **what happened**. Moby does not yet extract
+generalized lessons, validate procedural playbooks, or promote experiences into
+rules. Milvus integration, asynchronous vector indexing, expanded memory scopes,
+semantic compression, context decay, and GPU/RAM cache tiering are future work.
+
+See the [durable coding-run records guide](docs/run-records.md) for the full storage,
+capture, export, and recovery behavior.
 
 ## Starting inference servers
 

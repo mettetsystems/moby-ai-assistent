@@ -781,10 +781,16 @@ class SqliteStateStore:
         self.events = SqliteEventRepository(self._db)
         self.contracts = SqliteContractRepository(self._db)
         self.memory = SqliteMemoryRepository(self._db)
+        from mobyai.records.repository import RecordsRepository
+        from mobyai.records.capture import observe_store
+        self.records = RecordsRepository(self._db, None if str(path) == ":memory:" else self.path.with_name(self.path.name + ".records"))
+        observe_store(self)
 
     async def delete_project(self, project_id: str) -> None:
         def delete(conn):
             with conn:
+                conn.execute('BEGIN IMMEDIATE')
+                hashes = self.records.delete_in_transaction(conn, project_id)
                 for table in (
                     'memory_edges',
                     'memory_nodes',
@@ -796,7 +802,9 @@ class SqliteStateStore:
                     'projects',
                 ):
                     conn.execute(f'DELETE FROM {table} WHERE project_id=?',(project_id,))
-        await self._db.run(delete)
+                return hashes
+        hashes = await self._db.run(delete)
+        await self.records.remove_unreferenced(hashes)
 
     async def initialize(self) -> None:
         await self._db.initialize()

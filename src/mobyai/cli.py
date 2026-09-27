@@ -149,6 +149,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     report = sub.add_parser("report", help="Generate a reasoning logic report without running coding tasks")
     report.add_argument("project")
 
+    records = sub.add_parser("records", help="Export durable coding-run evidence")
+    records_commands = records.add_subparsers(dest="records_command", required=True)
+    export = records_commands.add_parser("export", help="Export JSON records and evidence artifacts")
+    export.add_argument("project")
+    export.add_argument("--output", required=True, type=Path)
+
     status = sub.add_parser("status", help="Show project or list all projects")
     status.add_argument("project", nargs="?")
 
@@ -322,6 +328,7 @@ async def _dispatch(
         await session.initialize()
         from mobyai.cli_operations import monitor, delete_project, with_monitor, approve_timeout
         handlers = {
+            "records": lambda: _cmd_records(session, args.project, args.output, stdout),
             "approve-timeout": lambda: approve_timeout(session, args.project, args.seconds, args.confirm, stdout),
             "monitor": lambda: monitor(session, args.project, stdout, verbosity=args.verbose, follow=args.follow),
             "delete": lambda: delete_project(session, args.project, args.confirm, stdout),
@@ -1061,6 +1068,16 @@ def _slugify(value: str) -> str:
     return slug[:64] or "project"
 
 
+
+async def _cmd_records(runtime, project_id, output, stdout):
+    from mobyai.records.export import export_records
+    try:
+        manifest = await export_records(runtime.store, project_id, output)
+    except (OSError, ValueError, LookupError) as exc:
+        raise CliError(str(exc)) from exc
+    print(f"Records exported to {output} (capture: {manifest['completeness']})", file=stdout)
+    return 0
+
+
 if __name__ == "__main__":
     sys.exit(main())
-

@@ -25,6 +25,7 @@ class OrchestratorAgent:
         max_decision_repairs: int | None = None,
     ) -> None:
         self._generator = generator
+        self.prompts = None
         self._max_decision_repairs = (
             generator.max_repair_attempts
             if max_decision_repairs is None
@@ -44,7 +45,7 @@ class OrchestratorAgent:
     ) -> OrchestratorResult:
         request = ModelRequest(
             messages=[
-                ChatMessage(role="system", content=SYSTEM_PROMPT),
+                ChatMessage(role="system", content=(self.prompts.get("orchestrator") if self.prompts else SYSTEM_PROMPT)),
                 ChatMessage(
                     role="user",
                     content=_render_user(

@@ -1,4 +1,5 @@
 """Validated final planning; normal orchestration performs edits and tests."""
+from mobyai.records.capture import operation, emit
 import asyncio
 from datetime import UTC, datetime
 import json
@@ -69,6 +70,7 @@ class FinalGenerator(StructuredGenerator):
         return await super()._request(request)
 
 
+@operation("final_pass", "plan")
 async def final_pass(runtime,project,*,review=False):
     config=runtime.config.final_fail
     if not config.enabled: return None
@@ -118,7 +120,10 @@ async def final_pass(runtime,project,*,review=False):
         with project_lease(runtime.config.persistence.database_path,'colibri-final-runtime'):
             async with asyncio.timeout(config.timeout_seconds):
                 async with inference(config) as provider:
-                    planner=PlannerAgent(FinalGenerator(provider,config,FINAL_REVIEW_PROMPT if review else FINAL_FAIL_PROMPT),max_inspect_turns=5,max_plan_repairs=2)
+                    prompts = getattr(runtime, "prompts", None)
+                    prompt = (prompts.get("final_review" if review else "final_fail")
+                              if prompts else (FINAL_REVIEW_PROMPT if review else FINAL_FAIL_PROMPT))
+                    planner=PlannerAgent(FinalGenerator(provider,config,prompt),max_inspect_turns=5,max_plan_repairs=2)
                     with minutes.recording(project,phase):
                         plan=await planner.create_plan(json.dumps(evidence,default=str),project_name=project.name,
                             existing_paths=await _existing_paths(workspace),inspector=_inspector(workspace))
@@ -150,6 +155,7 @@ async def final_pass(runtime,project,*,review=False):
             'updated_at':datetime.now(UTC)})
         await runtime.store.projects.save(current)
         await event(runtime,current,phase+'_planned',{'model':config.model,'report':str(directory/(phase+'.md'))})
+        await emit("plan_applied", {"proposal": plan.model_dump(mode="json"), "tasks": [t.model_dump(mode="json") for t in updated], "phase": phase})
         return current
     except asyncio.CancelledError:
         await event(runtime,project,phase+'_cancelled',{})

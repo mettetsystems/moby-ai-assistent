@@ -14,6 +14,7 @@ from mobyai.models.worker import WorkerResult
 class WorkerAgent:
     def __init__(self, generator: StructuredGenerator) -> None:
         self._generator = generator
+        self.prompts = None
 
     @property
     def refresh_context_enabled(self):
@@ -33,7 +34,7 @@ class WorkerAgent:
         from mobyai.sandbox.policy import guidance
         request = ModelRequest(
             messages=[
-                ChatMessage(role="system", content=SYSTEM_PROMPT + "\n" + tool_guidance() + "\n" + guidance()),
+                ChatMessage(role="system", content=(self.prompts.get("worker") if self.prompts else SYSTEM_PROMPT) + "\n" + tool_guidance() + "\n" + guidance()),
                 ChatMessage(role="user", content=USER_PROMPT.format(context=context.render())),
                 *extra_messages,
             ]

@@ -6,6 +6,8 @@ model only writes a remediation or escalation summary.
 
 from __future__ import annotations
 
+from mobyai.records.capture import operation
+
 from mobyai.tracing import traced
 
 from datetime import UTC, datetime
@@ -84,6 +86,7 @@ class OrchestrationStep:
 
 
 @traced("orchestrator.step")
+@operation("orchestrator", "run")
 async def advance_project(
     project: Project,
     store: StateStore,
@@ -171,6 +174,7 @@ async def advance_project(
     )
 
 
+@operation("harness", "run")
 async def run_project(
     project: Project,
     store: StateStore,
@@ -285,6 +289,7 @@ async def run_project(
     return OrchestrationStep(project=paused,decision=OrchestratorDecision.BLOCKED)
 
 
+@operation("orchestrator", "run")
 async def resolve_validation_failure(
     project: Project,
     store: StateStore,

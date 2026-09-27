@@ -233,14 +233,20 @@ class InMemoryStateStore:
         self.events = InMemoryEventRepository()
         self.contracts = InMemoryContractRepository()
         self.memory = InMemoryMemoryRepository()
+        from mobyai.records.repository import InMemoryRecordsRepository
+        from mobyai.records.capture import observe_store
+        self.records = InMemoryRecordsRepository()
+        self.records.state_store = self
+        observe_store(self)
 
     async def delete_project(self, project_id: str) -> None:
+        await self.records.delete_project(project_id)
         self.projects._projects.pop(project_id,None)
         self.tasks._tasks.pop(project_id,None)
         self.checkpoints._checkpoints.pop(project_id,None)
         self.attempts._attempts = {key:value for key,value in self.attempts._attempts.items() if key[0]!=project_id}
         self.contracts._contracts = {key:value for key,value in self.contracts._contracts.items() if key[0]!=project_id}
-        self.events._events = [event for event in self.events._events if event.project_id!=project_id]
+        self.events.inner._events = [event for event in self.events._events if event.project_id!=project_id]
         self.memory._nodes = {key:value for key,value in self.memory._nodes.items() if value.project_id!=project_id}
         self.memory._edges = {key:value for key,value in self.memory._edges.items() if value.project_id!=project_id}
 

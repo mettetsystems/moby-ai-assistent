@@ -549,3 +549,16 @@ When recovery evidence is supplied, distinguish observed facts, a proposed cause
 
 ```
 
+
+## Editing system prompts in Settings
+
+Open **Settings → System prompts** to view and edit Planner, Replanner,
+Orchestrator, Worker, Final Fail, and Final Review instructions. Use **Apply and
+save** to persist edits in the operator overlay. **Restore default** fills the
+editor with the built-in prompt; save to persist the reset. Empty prompts are
+rejected. User messages and tool/sandbox guidance are separate from these editors.
+
+Saved changes are pending until the next step or retry attempt starts. A single
+snapshot is shared by the worker, orchestrator, and recovery planner for the
+active attempt, including tool turns and schema repairs. Initial planning also
+loads a fresh snapshot. Saving during an attempt never replaces that snapshot.

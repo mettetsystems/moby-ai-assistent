@@ -1,4 +1,5 @@
 """Report generation and durable approval gate for existing workspaces."""
+from mobyai.records.capture import operation
 import asyncio
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -144,6 +145,7 @@ async def propose(store, project, plan):
     minutes.write(minutes.run_dir(project)/'proposal.json',document)
     await event(store,project,'review_plan_proposed',{'revision':document['revision']})
 
+@operation("human", "plan")
 async def approve(runtime, project, revision):
     directory=minutes.run_dir(project)
     proposal=minutes.read(directory/'proposal.json')

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from mobyai.records.capture import emit
+from uuid import uuid4
 from mobyai.tracing import traced
 
 import json
@@ -97,6 +99,7 @@ class StructuredGenerator:
         try:
             return parse_structured(response.content, schema)
         except StructuredOutputError as first_error:
+            await emit("schema_rejected", {"error": str(first_error), "raw": response.content})
             return await self._repair(request, schema, response.content, first_error)
 
     @traced("model.schema_repair")
@@ -132,6 +135,7 @@ class StructuredGenerator:
             try:
                 return parse_structured(response.content, schema)
             except StructuredOutputError as repair_error:
+                await emit("schema_rejected", {"error": str(repair_error), "raw": response.content})
                 last_error = repair_error
         raise SchemaRepairExhaustedError(
             f"Schema repair failed after {self.max_repair_attempts} attempt(s): {last_error}",
@@ -144,7 +148,15 @@ class StructuredGenerator:
         with span("model.request", model=getattr(self.provider, "model", "unknown"),
                   temperature=request.temperature, top_p=request.top_p,
                   top_k=request.top_k) as active:
-            response = await self.provider.generate(request)
+            identity = uuid4()
+            await emit("model_request", {"request": request.model_dump(mode="json"),
+                       "model": getattr(self.provider, "model", "unknown")}, correlation_id=identity)
+            try:
+                response = await self.provider.generate(request)
+            except BaseException as exc:
+                await emit("model_error", {"error": str(exc)}, correlation_id=identity)
+                raise
+            await emit("model_response", {"response": response.model_dump(mode="json")}, correlation_id=identity)
             from mobyai.review.minutes import capture_call
             capture_call(request, response)
             attribute(active, "prompt_tokens", response.prompt_tokens)

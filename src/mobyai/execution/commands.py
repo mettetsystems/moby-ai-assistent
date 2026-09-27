@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from mobyai.records.capture import command_action
 from mobyai.tracing import traced
 
 import asyncio
@@ -65,6 +66,7 @@ class CommandRunner:
         self.allow_destructive = allow_destructive
 
     @traced("command.run")
+    @command_action
     async def run(
         self,
         command: list[str],

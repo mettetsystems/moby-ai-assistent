@@ -65,7 +65,9 @@ class Runtime:
         def refresh() -> None:
             watcher.maybe_reload()
 
-        return cls(
+        from mobyai.agents.prompts.settings import PromptSnapshot
+        prompts = PromptSnapshot(config, refresh)
+        runtime = cls(
             config,
             store,
             PlannerAgent(
@@ -96,6 +98,11 @@ class Runtime:
             ),
             service_manager_from_config(config),
         )
+
+        for agent in (runtime.planner, runtime.orchestrator, runtime.worker):
+            agent.prompts = prompts
+        runtime.prompts = prompts
+        return runtime
 
     async def initialize(self) -> None:
         from mobyai.tracing import configure

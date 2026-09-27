@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from mobyai.records.capture import operation
+
 from mobyai.tracing import traced
 
 from collections.abc import Sequence
@@ -75,6 +77,7 @@ class TaskExecutionResult:
 
 
 @traced("worker.attempt")
+@operation("worker", "run")
 async def execute_task(
     project: Project,
     task_id: str,
@@ -113,6 +116,10 @@ async def execute_task(
             f"Task {task_id} is {task.status}, not eligible for Worker execution"
         )
 
+    prompts = getattr(agent, "prompts", None)
+    if prompts is not None:
+        prompts.begin_attempt()
+
     filesystem = WorkspaceFilesystem(workspace)
     commands = CommandRunner(workspace, max_output_bytes=max_output_bytes)
     tests = TestRunner(commands, workspace)
@@ -134,6 +141,8 @@ async def execute_task(
     project, task, attempt = await _enter_working(
         project, task, store, timestamp
     )
+    from mobyai.records.capture import begin_step, emit
+    await begin_step(task, attempt)
     extra_messages: list[ChatMessage] = []
     worker_result: WorkerResult | None = None
     outcomes: list[ToolOutcome] = []
@@ -154,6 +163,7 @@ async def execute_task(
             token_budget,
             remediation_instruction=remediation,
         )
+        await emit("worker_context", {"context": context.model_dump(mode="json"), "remediation_instruction": remediation})
         for _turn in range(max(max_turns, 1)):
             try:
                 worker_result = await agent.implement(
@@ -162,6 +172,7 @@ async def execute_task(
             except _WORKER_FAILURES as exc:
                 inference_error = str(exc)
                 break
+            await emit("worker_turn", {"turn": _turn + 1, "response": worker_result.model_dump(mode="json")})
             _extend_unique(references_used, worker_result.reference_urls_used)
             worker_result = worker_result.model_copy(update={"reference_urls_used":references_used[:]})
             turn_outcomes = await dispatcher.execute_all(worker_result.tool_calls)
@@ -203,12 +214,17 @@ async def execute_task(
     )
     await store.projects.save(project)
 
+    from uuid import uuid4
+    validation_id = uuid4()
+    await emit("validation_started", {"commands": task.test_commands}, correlation_id=validation_id)
     test_results, log_path = await _run_harness_tests(
         task,
         tests,
         logs,
         timeout_seconds=command_timeout_seconds,
     )
+    await emit("validation_finished", {"results": [item.model_dump(mode="json") for item in test_results], "log_path": log_path}, correlation_id=validation_id,
+               truncated=any(item.stdout_truncated or item.stderr_truncated for item in test_results))
     missing_files = _missing_required_files(workspace, task)
     tests_ok = bool(test_results) and all(test_passed(item) for item in test_results)
     timed_out = any(item.timed_out for item in test_results)

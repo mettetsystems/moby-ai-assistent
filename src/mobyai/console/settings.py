@@ -24,16 +24,33 @@ def serialize_role_settings(config: AppConfig) -> dict[str, Any]:
             "engine": model.engine,
             "provider": model.provider,
         }
-    return {"services_mode": config.services.mode.value, "models": roles, "final_fail":config.final_fail.model_dump(mode="json")}
+    from mobyai.agents.prompts.settings import default_prompts, effective_prompts
+    return {
+        "system_prompts": effective_prompts(config),
+        "default_system_prompts": default_prompts(),
+        "services_mode": config.services.mode.value,
+        "models": roles,
+        "final_fail": config.final_fail.model_dump(mode="json"),
+    }
 
 
 def apply_role_settings(config: AppConfig, payload: dict[str, Any]) -> None:
-    models = payload.get("models")
+    from mobyai.models.config import SystemPromptsConfig
+    prompts = None
+    if "system_prompts" in payload:
+        if not isinstance(payload["system_prompts"], dict):
+            raise ValueError("settings.system_prompts must be a mapping")
+        prompts = SystemPromptsConfig.model_validate({
+            **config.system_prompts.model_dump(), **payload["system_prompts"]
+        })
+    models = payload.get("models", {} if "system_prompts" in payload else None)
     if not isinstance(models, dict):
         raise ValueError("settings.models must be a mapping of roles")
     if 'final_fail' in payload:
         from mobyai.models.config import FinalFailConfig
         config.final_fail = FinalFailConfig.model_validate(payload['final_fail'])
+    if prompts is not None:
+        config.system_prompts = prompts
     for role in AgentRole:
         incoming = models.get(role.value)
         if not isinstance(incoming, dict):
@@ -74,6 +91,7 @@ def save_settings_overlay(config_path: Path, config: AppConfig) -> Path:
     payload: dict[str, Any] = yaml.safe_load(dest.read_text(encoding="utf-8")) if dest.is_file() else {}
     if not isinstance(payload, dict):
         payload = {}
+    payload["system_prompts"] = config.system_prompts.model_dump()
     payload["final_fail"] = config.final_fail.model_dump(mode="json")
     payload.setdefault("models", {})
     for role in AgentRole:
@@ -109,7 +127,7 @@ class OverlayWatcher:
         if not isinstance(overlay, dict):
             return
         # An overlay can contain only tracing/runtime settings; the role-settings
-        # API still requires models, but the general configuration overlay does not.
-        if "models" in overlay:
+        # API accepts models or system prompts; tracing-only overlays are ignored here.
+        if "models" in overlay or "system_prompts" in overlay:
             apply_role_settings(self.config, overlay)
         self._mtime = mtime

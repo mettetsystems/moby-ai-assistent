@@ -216,7 +216,24 @@ class FinalFailConfig(_StrictModel):
 from mobyai.sandbox.policy import SandboxConfig
 
 
+class SystemPromptsConfig(_StrictModel):
+    planner: str | None = None
+    replan: str | None = None
+    orchestrator: str | None = None
+    worker: str | None = None
+    final_fail: str | None = None
+    final_review: str | None = None
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def validate_prompt(cls, value):
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ValueError("System prompts must be non-empty text or null for the default")
+        return value
+
+
 class AppConfig(_StrictModel):
+    system_prompts: SystemPromptsConfig = Field(default_factory=SystemPromptsConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     final_fail: FinalFailConfig = Field(default_factory=FinalFailConfig)
     tracing: TracingConfig = Field(default_factory=TracingConfig)

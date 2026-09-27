@@ -240,6 +240,11 @@
         beside the main config (the token never goes here).
       </p>
       <div id="roles" class="roles"></div>
+      <article class="card">
+        <h2>System prompts</h2>
+        <p>View and edit the system instructions for each agent. Saved edits take effect at the next step or retry attempt. The active attempt keeps its current prompts. Tool and sandbox guidance is added by the harness.</p>
+        <div id="system-prompts"></div>
+      </article>
       <div class="row">
         <article class="card">
           <h2>Final Fail / Final Review</h2>
@@ -914,10 +919,25 @@
       try { showFinalBuild(await apiJson("/api/final-build",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"cancel"})})); }
       catch(error) { $("final-build-status").textContent=error.message; }
     };
+    const promptLabels = {planner:"Planner", replan:"Replanner", orchestrator:"Orchestrator", worker:"Worker", final_fail:"Final Fail", final_review:"Final Review"};
+    let defaultSystemPrompts = {};
+    function showSystemPrompts(data) {
+      defaultSystemPrompts = data.default_system_prompts || {};
+      $("system-prompts").innerHTML = Object.entries(promptLabels).map(([key,label]) => `
+        <details><summary>${label}</summary>
+          <label for="prompt-${key}">${label} system prompt</label>
+          <textarea id="prompt-${key}" data-prompt="${key}" rows="18" style="width:100%;font-family:monospace">${esc((data.system_prompts || {})[key] || "")}</textarea>
+          <button type="button" class="btn" data-reset-prompt="${key}">Restore default</button>
+        </details>`).join("");
+      document.querySelectorAll("[data-reset-prompt]").forEach(button => {
+        button.onclick = () => { $("prompt-" + button.dataset.resetPrompt).value = defaultSystemPrompts[button.dataset.resetPrompt] || ""; };
+      });
+    }
     async function loadSettings() {
       const res = await fetch("/api/settings");
       const data = await res.json();
       $("roles").innerHTML = roles.map(role => roleCard(role, data.models[role])).join("");
+      showSystemPrompts(data);
       const f=data.final_fail || {};
       $("final-enabled").checked=!!f.enabled;
       for (const [id,key] of [["model","model"],["weights","weights_repo"],["directory","directory"],["context","context_tokens"],["output","max_output_tokens"],["cache","cache_slots"],["timeout","timeout_seconds"]]) $("final-"+id).value=f[key] ?? "";
@@ -937,10 +957,20 @@
           top_k: numOrNull(get("top_k")),
         };
       });
+      const system_prompts = {};
+      for (const key of Object.keys(promptLabels)) {
+        const value = $("prompt-" + key).value;
+        if (!value.trim()) {
+          $("settings-msg").textContent = promptLabels[key] + " system prompt cannot be empty.";
+          $("settings-msg").className = "status err";
+          return;
+        }
+        system_prompts[key] = value === defaultSystemPrompts[key] ? null : value;
+      }
       const res = await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ models, final_fail: finalSettings() }),
+        body: JSON.stringify({ models, system_prompts, final_fail: finalSettings() }),
       });
       const body = await res.json();
       const msg = $("settings-msg");
@@ -949,7 +979,7 @@
         msg.className = "status err";
         return;
       }
-      msg.textContent = "Saved overlay " + body.overlay;
+      msg.textContent = "Saved. System prompt edits take effect at the next step or retry attempt. Overlay: " + body.overlay;
       msg.className = "status ok";
       await loadSettings();
     };

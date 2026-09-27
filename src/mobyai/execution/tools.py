@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from mobyai.records.capture import tool_action
 from mobyai.tracing import traced
 
 import json
@@ -93,6 +94,7 @@ class ToolDispatcher:
         return [await self.execute(call, allowed=allowed) for call in calls]
 
     @traced("tool.execute")
+    @tool_action
     async def execute(
         self,
         call: WorkerToolCall,

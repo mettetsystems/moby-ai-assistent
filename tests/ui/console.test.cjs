@@ -325,3 +325,26 @@ test('final review reports render as text, not markup',()=>{
   assert.match(p.element('final-pass-report').textContent,/<script>/);
   assert.equal(p.element('final-pass-report').innerHTML,'');
 });
+
+test('system prompt editor escapes text and labels activation boundary', () => {
+  const p=page();
+  vm.runInContext('showSystemPrompts({system_prompts:{worker:"</textarea><script>bad</script>"},default_system_prompts:{worker:"Default"}})',p.context);
+  assert.match(p.element('system-prompts').innerHTML,/&lt;\/textarea&gt;/);
+  assert.match(p.element('system-prompts').innerHTML,/Worker system prompt/);
+  assert.match(p.element('system-prompts').innerHTML,/Restore default/);
+});
+
+test('saving includes system prompts and uses null to restore defaults', async () => {
+  const p=page();
+  await vm.runInContext('loadSettings()',p.context);
+  vm.runInContext('defaultSystemPrompts = {worker:"Default worker"}',p.context);
+  for(const key of ['planner','replan','orchestrator','worker','final_fail','final_review']) {
+    p.element('prompt-'+key).value=key==='worker'?'Default worker':'Custom '+key;
+  }
+  await p.element('save-settings').onclick();
+  const call=p.calls.find(([url,opts])=>url==='/api/settings'&&opts?.method==='PUT');
+  const payload=JSON.parse(call[1].body);
+  assert.equal(payload.system_prompts.worker,null);
+  assert.equal(payload.system_prompts.replan,'Custom replan');
+  assert.match(p.element('settings-msg').textContent,/next step or retry attempt/);
+});
