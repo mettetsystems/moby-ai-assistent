@@ -15,6 +15,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from mobyai.execution.errors import DestructiveCommandError, PathEscapeError, WorkspaceError
+from mobyai.execution.argv import CommandSyntaxError, validate_argv
 from mobyai.execution.workspace import Workspace
 
 _DESTRUCTIVE_PROGRAMS = frozenset(
@@ -78,6 +79,11 @@ class CommandRunner:
             raise WorkspaceError("Command must be a non-empty argv list")
         if any(not isinstance(part, str) or part == "" for part in command):
             raise WorkspaceError("Command argv must be non-empty strings")
+        try:
+            validate_argv(command)
+        except CommandSyntaxError as exc:
+            return CommandResult(command=list(command), exit_code=2, stdout="",
+                                 stderr=str(exc), duration_seconds=0)
         from mobyai.sandbox.policy import current as sandbox_policy
         sandbox = sandbox_policy()
         if sandbox is None and not self.allow_destructive and _is_destructive(command):

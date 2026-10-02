@@ -21,6 +21,7 @@ from mobyai.agents.prompts.planner import (
 )
 from mobyai.dag.patch import DAGPatchError, affected_branch, apply_dag_patch
 from mobyai.dag.validator import DAGValidationError, validate_dag
+from mobyai.execution.argv import CommandSyntaxError, split_command
 from mobyai.execution.tools import PLANNER_INSPECT_TOOLS, ToolDispatcher, format_tool_outcomes
 from mobyai.inference.structured import StructuredGenerator
 from mobyai.inference.recovery import recovery_stage, current_stage
@@ -277,6 +278,11 @@ def _validate_task_spec(spec: PlannerTaskSpec) -> None:
         raise PlanValidationError(f"{spec.task_id} is missing acceptance_criteria")
     if not spec.test_commands:
         raise PlanValidationError(f"{spec.task_id} is missing test_commands")
+    for command in spec.test_commands:
+        try:
+            split_command(command)
+        except CommandSyntaxError as exc:
+            raise PlanValidationError(f"{spec.task_id} test_commands: {exc}") from exc
     for path in (*spec.target_files, *spec.test_files, *spec.required_context):
         _assert_relative_path(path, spec.task_id)
 

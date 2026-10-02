@@ -175,7 +175,11 @@ def view(project):
     result={}
     for name,key in [('proposal.json','proposal'),('reasoning-logic-report.json','logic_report'),('functionality-report.json','functionality_report')]:
         path=directory/name
-        if path.exists(): result[key]=minutes.read(path)
+        try:
+            if path.exists() or path.is_symlink():
+                result[key]=minutes.read(path)
+        except (ValueError, OSError, RuntimeError) as exc:
+            result.setdefault('warnings', []).append(f"Cannot read {name}: {exc}")
     return result
 
 async def requested_report(runtime, project, completed=False):

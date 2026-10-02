@@ -31,7 +31,7 @@ class WorkspaceFilesystem:
         target = self.workspace.resolve(path, must_exist=True)
         if not target.is_file():
             raise WorkspaceError(f"Not a file: {path}")
-        return await asyncio.to_thread(target.read_text, encoding="utf-8")
+        return await asyncio.to_thread(_read_text, target)
 
     async def write_file(self, path: str, contents: str) -> str:
         target = self.workspace.resolve(path)
@@ -51,8 +51,10 @@ class WorkspaceFilesystem:
         def _list() -> list[str]:
             names: list[str] = []
             for child in sorted(target.iterdir(), key=lambda item: item.name):
-                rel = self.workspace.relative(child)
-                if child.is_dir() and not child.is_symlink():
+                # Report the entry name, not its dereferenced target. Listing an
+                # external/dangling/cyclic link is safe; reading it is checked separately.
+                rel = (Path(self.workspace.relative(target)) / child.name).as_posix()
+                if not child.is_symlink() and child.is_dir():
                     names.append(rel + "/")
                 else:
                     names.append(rel)
@@ -74,7 +76,7 @@ class WorkspaceFilesystem:
             hits: list[SearchHit] = []
             files = [root] if root.is_file() else _iter_files(root)
             for file_path in files:
-                if not self.workspace.contains(file_path.resolve()):
+                if not self.workspace.contains(file_path):
                     continue
                 try:
                     text = file_path.read_text(encoding="utf-8")
@@ -123,7 +125,7 @@ class WorkspaceFilesystem:
                     continue
                 try:
                     resolved = item.resolve()
-                except OSError:
+                except (OSError, RuntimeError):
                     continue
                 if not resolved.is_file() or not self.workspace.contains(resolved):
                     continue
@@ -162,6 +164,13 @@ class WorkspaceFilesystem:
             return entries
 
         return await asyncio.to_thread(_walk)
+
+
+def _read_text(target: Path) -> str:
+    # Exact-edit arguments and source hashes must describe the same bytes,
+    # including CRLF files. Universal-newline conversion would invalidate them.
+    with target.open(encoding="utf-8", newline="") as source:
+        return source.read()
 
 
 def _atomic_write(target, contents: str) -> None:

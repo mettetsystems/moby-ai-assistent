@@ -229,3 +229,24 @@ async def test_exited_worker_does_not_pause_new_owner(tmp_path):
     with project_lease(runtime.config.persistence.database_path,project.project_id):
         await workloads.watch(process,project.project_id)
     assert (await runtime.store.projects.get(project.project_id)).state==ProjectState.WORKING
+
+
+async def test_final_build_setup_failure_with_unwritable_status(tmp_path, monkeypatch):
+    from mobyai.final_pass import runtime as adapter
+    from mobyai.models.config import FinalFailConfig
+    path, runtime = _runtime(tmp_path)
+    config = FinalFailConfig(directory=tmp_path / 'colibri')
+    monkeypatch.setattr(adapter, 'build', AsyncMock(side_effect=OSError('Cannot create build directory')))
+    def denied(*args):
+        raise PermissionError('Read-only storage')
+    monkeypatch.setattr(adapter, 'write', denied)
+    workloads = Workloads(runtime, path)
+    task = asyncio.create_task(workloads._build_final_job(config))
+    await task
+    assert task.exception() is None
+    result = adapter.status(config)
+    assert result['state'] == 'failed'
+    assert 'Cannot create build directory' in result['message']
+    assert 'Read-only storage' in result['message']
+    adapter._status_fallback.pop(adapter.identity(config))
+    await runtime.aclose()

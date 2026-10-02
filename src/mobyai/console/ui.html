@@ -251,9 +251,10 @@
           <label><input id="final-enabled" type="checkbox"/> Enable local final passes</label>
           <p>Final Fail makes one last recovery plan before a failure stop. Final Review is selected per workload. Both preserve manual Stop and require normal worker validation.</p>
           <label for="final-model">Model identity</label><input id="final-model"/>
-          <label for="final-weights">Colibri-compatible Hugging Face weights repository</label><input id="final-weights"/>
-          <label for="final-directory">Local storage directory (absolute path)</label><input id="final-directory"/>
-          <p>GLM-5.2 INT4 requires about 372 GB plus headroom. Choose a drive with enough free space. CPU/disk inference is used; no GPU memory is reserved. First save settings, then pre-build before launching work.</p>
+          <label for="final-weights">Local model directory (absolute path)</label><input id="final-weights" placeholder="/mnt/models/my-model"/>
+          <label for="final-placement">Model placement</label><select id="final-placement"><option value="auto">Auto — use same filesystem, otherwise copy</option><option value="in_place">Use model in place</option><option value="copy">Copy model to NVMe storage</option></select>
+          <label for="final-directory">NVMe runtime storage directory (absolute path)</label><input id="final-directory"/>
+          <p>Select a complete Colibri-compatible local model. No model weights are downloaded. Auto uses files on the same filesystem as runtime storage directly; otherwise it copies them. Choose your NVMe mount as runtime storage, or explicitly select placement. Allow space for copies plus 10 GiB build headroom. CPU/disk inference is used; no GPU memory is reserved. First save settings, then pre-build before launching work.</p>
           <label for="final-context">Context tokens</label><input id="final-context" type="number" min="4096" max="65536"/>
           <label for="final-output">Maximum response tokens</label><input id="final-output" type="number" min="512" max="8192"/>
           <label for="final-cache">Expert cache slots per layer</label><input id="final-cache" type="number" min="1" max="32"/>
@@ -262,6 +263,15 @@
           <button id="final-build-refresh" class="btn" type="button">Check build status</button>
           <button id="final-build-cancel" class="btn" type="button">Cancel pre-build</button>
           <p id="final-build-status" role="status"></p>
+          <details open>
+            <summary>Pre-build output · refreshes every 3 seconds while building</summary>
+            <p id="final-build-updated"></p>
+            <h4>Local model preparation and compilation</h4>
+            <pre id="final-build-log" style="max-height:22rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere">No output yet.</pre>
+            <h4>Model loading and inference check</h4>
+            <pre id="final-inference-log" style="max-height:16rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere">No output yet.</pre>
+            <p>Shows the latest 200 lines (up to 32 KiB) of each log. Full logs remain in the storage directory above. Some operations can be quiet for several minutes.</p>
+          </details>
         </article>
         <button class="btn primary" id="save-settings" type="button">Apply and save</button>
         <span id="settings-msg" class="status"></span>
@@ -762,8 +772,9 @@
       $("plan-approval-panel").classList.toggle("hidden",!revision);
       $("proposed-plan").textContent=proposal ? formatProposal(proposal.plan) : "";
       const report=review.logic_report || review.functionality_report;
-      $("review-report-panel").classList.toggle("hidden",!report);
-      $("review-report").textContent=report ? formatReviewReport(report) : "";
+      const reportWarnings=(review.warnings || []).join("\n");
+      $("review-report-panel").classList.toggle("hidden",!report && !reportWarnings);
+      $("review-report").textContent=[report ? formatReviewReport(report) : "",reportWarnings].filter(Boolean).join("\n\n");
       $("generate-logic-report").disabled=!id || workloadActionBusy;
       $("plan-reviewed").onchange();
       if (revision) $("resume-workload").disabled=true;
@@ -895,16 +906,36 @@
     }
 
     function finalSettings() {
-      return {enabled:$("final-enabled").checked,model:$("final-model").value,weights_repo:$("final-weights").value,
+      return {enabled:$("final-enabled").checked,model:$("final-model").value,model_directory:$("final-weights").value || null,model_placement:$("final-placement").value,
         directory:$("final-directory").value,context_tokens:Number($("final-context").value),
         max_output_tokens:Number($("final-output").value),cache_slots:Number($("final-cache").value),
         timeout_seconds:Number($("final-timeout").value)};
     }
+    let finalBuildTimer;
+    async function refreshFinalBuild() {
+      clearTimeout(finalBuildTimer);
+      try { showFinalBuild(await apiJson("/api/final-build")); }
+      catch(error) {
+        $("final-build-updated").textContent="Could not refresh progress: " + error.message + ". Retrying…";
+        finalBuildTimer=setTimeout(refreshFinalBuild,3000);
+      }
+    }
     function showFinalBuild(data) {
+      clearTimeout(finalBuildTimer);
       $("final-build-status").textContent=(data.state || "not built") + ": " + (data.message || "") +
         (data.directory ? " — Logs: " + data.directory : "");
       $("final-build").disabled=data.state === "building";
       $("final-build-cancel").disabled=data.state !== "building";
+      $("final-build-updated").textContent="Checked: " + new Date().toLocaleTimeString() +
+        (data.updated_at ? " · Stage updated: " + new Date(data.updated_at).toLocaleString() : "");
+      for (const [name,id] of [["build.log","final-build-log"],["inference.log","final-inference-log"]]) {
+        const log=(data.logs || {})[name];
+        if (!log) continue;
+        const el=$(id), atBottom=el.scrollTop+el.clientHeight>=el.scrollHeight-30;
+        el.textContent=log.error || ((log.truncated ? "[Earlier output omitted]\n" : "") + (log.text || "No output yet."));
+        if (atBottom) el.scrollTop=el.scrollHeight;
+      }
+      if (data.state === "building") finalBuildTimer=setTimeout(refreshFinalBuild,3000);
     }
     $("final-build").onclick=async()=>{
       $("final-build").disabled=true;
@@ -912,8 +943,7 @@
       catch(error) { $("final-build-status").textContent=error.message; $("final-build").disabled=false; }
     };
     $("final-build-refresh").onclick=async()=>{
-      try { showFinalBuild((await apiJson("/api/settings")).final_build || {}); }
-      catch(error) { $("final-build-status").textContent=error.message; }
+      await refreshFinalBuild();
     };
     $("final-build-cancel").onclick=async()=>{
       try { showFinalBuild(await apiJson("/api/final-build",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"cancel"})})); }
@@ -940,7 +970,7 @@
       showSystemPrompts(data);
       const f=data.final_fail || {};
       $("final-enabled").checked=!!f.enabled;
-      for (const [id,key] of [["model","model"],["weights","weights_repo"],["directory","directory"],["context","context_tokens"],["output","max_output_tokens"],["cache","cache_slots"],["timeout","timeout_seconds"]]) $("final-"+id).value=f[key] ?? "";
+      for (const [id,key] of [["model","model"],["weights","model_directory"],["placement","model_placement"],["directory","directory"],["context","context_tokens"],["output","max_output_tokens"],["cache","cache_slots"],["timeout","timeout_seconds"]]) $("final-"+id).value=f[key] ?? "";
       showFinalBuild(data.final_build || {});
     }
 

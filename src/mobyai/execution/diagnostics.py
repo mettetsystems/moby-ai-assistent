@@ -13,6 +13,18 @@ class FailureDiagnosis:
 
 def diagnose(text: str) -> FailureDiagnosis:
     lower = text.lower()
+    if ('invalid command syntax:' in lower or
+            re.search(r'executable not found:\s*(?:source|cd|export|unset|\.)(?=[.\s]|$)', lower)):
+        return FailureDiagnosis(
+            "command_syntax",
+            "Repair the saved validation command through the Planner while preserving "
+            "its acceptance criteria. The runner uses argv, not an implicit shell: "
+            "source/cd and shell operators are not executable commands. Use the project "
+            "venv interpreter directly for installation and validation. Inspect the "
+            "existing environment; do not recreate it, install a shell builtin, or "
+            "change sampling to repair command syntax.",
+            False, True,
+        )
     if 'sandbox unavailable:' in lower or 'execution policy blocked command:' in lower:
         return FailureDiagnosis("execution_policy", "The execution environment or policy blocked validation. Request operator review; do not bypass isolation, use host sudo, or change sampling.", False)
 
@@ -25,7 +37,7 @@ def diagnose(text: str) -> FailureDiagnosis:
     if 'missing script:' in lower:
         return FailureDiagnosis("npm_missing_script", "Inspect package.json scripts in the command's working directory and the actual test files. Add the missing script targeting real tests, or correct the planned command to an existing equivalent. Do not use --if-present, a no-op test, or merely rename the task. Verify the exact harness command before claiming completion.")
     if any(x in lower for x in ('eresolve', 'unable to resolve dependency tree')):
-        return FailureDiagnosis("npm_dependency_conflict", "Inspect package.json, the lockfile, Node/npm versions and peer dependency ranges. Choose compatible versions; do not hide conflicts with --force or --legacy-peer-deps.")
+        return FailureDiagnosis("npm_dependency_conflict", "Use inspect_node_project to inspect package.json, lockfiles, installed versions and peer requirements. Verify Node/npm versions with the existing command tool. Choose a compatible declared version set before retrying installation. Do not repeat npm ci/install against unchanged manifests, delete the lockfile, or hide conflicts with --force/--legacy-peer-deps. Preserve test scope; do not change sampling to repair dependency constraints.", False, True)
     # Match complete codes: FileNotFoundError contains the substring ENOTFOUND.
     if re.search(r'\b(?:eai_again|enotfound|econnrefused|econnreset|etimedout|connecterror|readtimeout)\b', lower):
         return FailureDiagnosis("network", "Check registry/endpoint reachability and proxy configuration. A network failure is not evidence of a code defect. Preserve the error and pause for environment repair if connectivity cannot be restored.", False)

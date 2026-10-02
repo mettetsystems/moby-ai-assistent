@@ -95,13 +95,18 @@ class ContextPacker:
         }
         from mobyai.engine.recovery_evidence import fingerprint
         from mobyai.memory.assembly import working_set_for
+        from mobyai.memory.tool_failures import recall_tool_failures
 
         # Use the same persisted harness error as record_attempt_memory.
         signature = fingerprint(project.last_error, task.test_commands) if project.last_error else None
+        tool_memory = await recall_tool_failures(self._store, project_id, task,
+            self._filesystem.workspace, token_budget=min(600, self.memory_token_budget // 2))
         shared_memory = await working_set_for(
             self._store, project_id, task_id,
-            failure_signature=signature, token_budget=self.memory_token_budget,
+            failure_signature=signature,
+            token_budget=max(0, self.memory_token_budget - estimate_tokens(tool_memory) - 1),
         )
+        shared_memory = "\n".join(block for block in (tool_memory, shared_memory) if block)
         return await self.pack(
             project,
             task,

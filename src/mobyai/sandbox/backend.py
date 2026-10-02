@@ -42,12 +42,22 @@ def container_args(config, workspace, cwd, dependencies, name, command):
         "--env", "PIP_FIND_LINKS=/dependencies", "--env", "npm_config_offline=true",
         "--volume", f"{workspace.root}:/workspace:rw,Z",
         "--volume", f"{dependencies}:/dependencies:ro,Z"]
+    # A second mount of the SAME project supports absolute links and generated
+    # venv shebangs containing its original host path. It exposes no parent/home.
+    aliases = ["/workspace"]
+    native = str(workspace.root)
+    if native != "/workspace":
+        if native in ("/dependencies", "/tmp", "/usr", "/etc", "/opt", "/home", "/var", "/run", "/proc", "/sys", "/dev"):
+            raise ValueError("Sandbox requires a dedicated project subdirectory")
+        args += ["--volume", f"{workspace.root}:{native}:rw,Z"]
+        aliases.append(native)
     for entry in PROTECTED:
         path = workspace.root / entry
         if path.is_symlink():
             raise ValueError(f"Protected path cannot be a symlink: {entry}")
         if path.exists():
-            args += ["--volume", f"{path}:/workspace/{entry}:ro,Z"]
+            for alias in aliases:
+                args += ["--volume", f"{path}:{alias}/{entry}:ro,Z"]
     return args + ["--entrypoint", command[0], config.image, *command[1:]]
 
 async def run(config, workspace, command, cwd, timeout_seconds, max_output_bytes, *, name=None):
@@ -58,14 +68,7 @@ async def run(config, workspace, command, cwd, timeout_seconds, max_output_bytes
     controller = Path(__file__).resolve().parents[3]
     if controller.is_relative_to(workspace.root) or workspace.root.is_relative_to(controller):
         raise ValueError("Sandbox workspace must be separate from the MobyAI installation")
-    # No host sockets, devices, symlinks or hard links are exposed through the project.
-    # Symlinks can redirect tools; hard links can expose unrelated host files.
-    import stat
-    for parent, dirs, files in os.walk(workspace.root, followlinks=False):
-        for entry in dirs + files:
-            info = (Path(parent) / entry).lstat()
-            if (not stat.S_ISDIR(info.st_mode) and not stat.S_ISREG(info.st_mode)) or (stat.S_ISREG(info.st_mode) and info.st_nlink > 1):
-                raise ValueError("Sandbox project must contain only regular files/directories without hard links")
+    validate_tree(workspace.root)
     name = name or "mobyai-sandbox-" + uuid.uuid4().hex
     import re
     if not re.fullmatch(r"mobyai-sandbox-[a-f0-9]{32}", name):
@@ -106,3 +109,22 @@ async def run(config, workspace, command, cwd, timeout_seconds, max_output_bytes
         return CommandResult(command=command, exit_code=-1 if timed_out else process.returncode,
             stdout=stdout.text(), stderr=stderr.text(), duration_seconds=time.monotonic()-started,
             timed_out=timed_out, stdout_truncated=stdout.truncated, stderr_truncated=stderr.truncated)
+
+
+def validate_tree(root):
+    """Inspect directory entries without following links into the host filesystem.
+
+    Symlink destinations resolve in the container namespace, not on the host.
+    Hard links and mounted special files still expose host objects and are denied.
+    """
+    import stat
+    def failed(error):
+        raise ValueError(f"Cannot inspect sandbox workspace: {error}") from error
+    for parent, dirs, files in os.walk(root, followlinks=False, onerror=failed):
+        for entry in dirs + files:
+            path = Path(parent) / entry
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                continue
+            if (not stat.S_ISDIR(info.st_mode) and not stat.S_ISREG(info.st_mode)) or (stat.S_ISREG(info.st_mode) and info.st_nlink > 1):
+                raise ValueError(f"Sandbox disallows hard links and special files: {path.relative_to(root)}")

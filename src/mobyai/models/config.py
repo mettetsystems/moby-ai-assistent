@@ -190,6 +190,9 @@ class FinalFailConfig(_StrictModel):
     enabled: bool = False
     model: str = "zai-org/GLM-5.2"
     weights_repo: str = "mastouri/GLM-5.2-colibri-int4-g64-with-int8-mtp"
+    # weights_repo is accepted only for compatibility with older overlays.
+    model_directory: Path | None = None
+    model_placement: Literal['auto', 'in_place', 'copy'] = 'auto'
     directory: Path = Path("~/MobyAI/colibri").expanduser()
     context_tokens: int = Field(default=16384, ge=4096, le=65536)
     max_output_tokens: int = Field(default=4096, ge=512, le=8192)
@@ -204,9 +207,11 @@ class FinalFailConfig(_StrictModel):
             raise ValueError('Use an organization/model repository identifier')
         return value
 
-    @field_validator('directory', mode='before')
+    @field_validator('directory', 'model_directory', mode='before')
     @classmethod
     def local_directory(cls, value):
+        if value is None:
+            return None
         path = Path(value).expanduser()
         if not path.is_absolute():
             raise ValueError('Colibri directory must be absolute')

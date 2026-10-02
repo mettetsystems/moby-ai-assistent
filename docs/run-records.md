@@ -41,12 +41,23 @@ errors. It retains model-returned content; it does not reconstruct missing inter
 reasoning. Existing Settings prompt overrides remain authoritative, and later
 prompt edits do not rewrite earlier artifacts.
 
+For the known worker format drift of string `summary` fields inside individual
+tool calls, a `schema_normalized` entry records the original response and exact
+removed field paths. The full normalized response must pass strict validation
+before execution. Other schema failures retain the existing `schema_rejected`
+and bounded model-repair records.
+
 Tool and command records separate the requested action from its observed result.
 Their start and finish entries share a correlation UUID. Tool arguments include
 submitted write and patch payloads. Command results include available stdout,
 stderr, exit status, timeout, and truncation information. A worker context entry
 preserves the task briefing and remediation instruction. Harness validation has
 its own boundaries and result payload.
+
+Local workspace/environment MCP calls also record `local_mcp_started`,
+`local_mcp_finished`, or `local_mcp_cancelled` entries with a shared invocation
+ID, server group and tool name. These supplement the enclosing tool request and
+outcome. A transport failure is recorded without automatically replaying a write.
 
 These are observations, not replay instructions. An unmatched start means that no
 completion was recorded. Moby does not infer success or replay actions because of

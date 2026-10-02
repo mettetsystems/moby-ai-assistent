@@ -58,7 +58,7 @@ class FinalGenerator(StructuredGenerator):
 
     async def generate(self,request,schema):
         request=request.model_copy(update={'messages':[ChatMessage(role='system',content=self.prompt),
-            *request.messages,ChatMessage(role='user',content='Required JSON schema:\n'+json.dumps(schema.model_json_schema()))],
+            *request.messages],
             'json_mode':False,'response_schema':None,'temperature':0.0,'top_k':None,'top_p':None,
             'max_tokens':self.config.max_output_tokens})
         return await super().generate(request,schema)

@@ -20,6 +20,7 @@ from mobyai.inference.base import (
 from mobyai.inference.recovery import current_stage, recovery_stage, sampling_steps
 from mobyai.models.config import RoleModelConfig
 from mobyai.models.inference import ChatMessage, ModelRequest
+from mobyai.models.worker import WorkerResult
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -62,6 +63,20 @@ def extract_json_value(text: str) -> Any:
     raise StructuredOutputError("No JSON object or array found in model output", raw=text)
 
 
+def _normalize_worker_metadata(value: Any) -> tuple[Any, list[str]]:
+    """Remove only known, non-executable annotations; never rewrite arguments."""
+    if not isinstance(value, dict) or not isinstance(value.get("tool_calls"), list):
+        return value, []
+    calls = []
+    removed = []
+    for index, call in enumerate(value["tool_calls"]):
+        if isinstance(call, dict) and isinstance(call.get("summary"), str):
+            call = {key: item for key, item in call.items() if key != "summary"}
+            removed.append(f"tool_calls.{index}.summary")
+        calls.append(call)
+    return {**value, "tool_calls": calls}, removed
+
+
 class StructuredGenerator:
     """Generate then validate. Repair is bounded and uses validation errors, not guesswork."""
 
@@ -87,20 +102,47 @@ class StructuredGenerator:
         schema: type[T],
     ) -> T:
         request = self._with_live_settings(request)
+        schema_json = schema.model_json_schema()
+        instruction = (
+            f"Return one {schema.__name__} JSON object using only the documented fields.\n"
+            "Required JSON schema:\n" + json.dumps(schema_json, ensure_ascii=False, separators=(",", ":"))
+        )
+        messages = list(request.messages)
+        if messages[0].role == "system":
+            messages[0] = messages[0].model_copy(
+                update={"content": messages[0].content + "\n\n" + instruction}
+            )
+        else:
+            messages.insert(0, ChatMessage(role="system", content=instruction))
+        request = request.model_copy(update={"messages": messages})
         if self.settings is not None and self.settings.structured_output == "json_schema":
-            schema_json = schema.model_json_schema()
             request = request.model_copy(update={"response_schema": schema_json,
-                "response_schema_name": schema.__name__,
-                "messages": [*request.messages, ChatMessage(role="user", content=
-                    "Output must match this schema, including any plan/patch wrapper. "
-                    "Choose either nonempty inspect_calls or a completed plan/patch, not an empty object.\n" +
-                    json.dumps(schema_json, ensure_ascii=False))]})
+                "response_schema_name": schema.__name__})
         response = await self._request(request)
         try:
-            return parse_structured(response.content, schema)
+            return await self._parse_response(response.content, schema)
         except StructuredOutputError as first_error:
             await emit("schema_rejected", {"error": str(first_error), "raw": response.content})
             return await self._repair(request, schema, response.content, first_error)
+
+    async def _parse_response(self, raw: str, schema: type[T]) -> T:
+        try:
+            return parse_structured(raw, schema)
+        except StructuredOutputError as error:
+            if schema is not WorkerResult:
+                raise
+            try:
+                value, removed = _normalize_worker_metadata(extract_json_value(raw))
+                if not removed:
+                    raise error
+                result = schema.model_validate(value)
+            except (StructuredOutputError, ValidationError):
+                # Preserve the original response and error for model repair.
+                raise error
+            await emit("schema_normalized", {
+                "schema": schema.__name__, "removed_fields": removed, "raw": raw,
+            })
+            return result
 
     @traced("model.schema_repair")
     async def _repair(
@@ -110,13 +152,13 @@ class StructuredGenerator:
         previous: str,
         error: StructuredOutputError,
     ) -> T:
-        messages = list(request.messages)
         last_error = error
         last_raw = previous
         starting_stage = current_stage()
         for _attempt in range(self.max_repair_attempts):
             messages = [
-                *messages,
+                # Keep executed tool history, but not every failed repair reply.
+                *request.messages,
                 ChatMessage(role="assistant", content=last_raw or " "),
                 ChatMessage(
                     role="user",
@@ -133,7 +175,7 @@ class StructuredGenerator:
             response = await self._request(repaired_request)
             last_raw = response.content
             try:
-                return parse_structured(response.content, schema)
+                return await self._parse_response(response.content, schema)
             except StructuredOutputError as repair_error:
                 await emit("schema_rejected", {"error": str(repair_error), "raw": response.content})
                 last_error = repair_error

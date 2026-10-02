@@ -204,6 +204,10 @@ def test_console_http_settings_round_trip(tmp_path: Path) -> None:
         got = httpx.get(f"http://127.0.0.1:{port}/api/settings", timeout=5)
         assert got.status_code == 200
         assert "planner" in got.json()["models"]
+        progress = httpx.get(f"http://127.0.0.1:{port}/api/final-build", timeout=5)
+        assert progress.status_code == 200
+        assert 'state' in progress.json()
+        assert 'build.log' in progress.json()['logs']
         body = got.json()
         body["models"]["worker"]["temperature"] = 0.3
         body["models"]["worker"]["endpoint"] = "http://127.0.0.1:4321"

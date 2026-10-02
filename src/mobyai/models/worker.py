@@ -20,6 +20,11 @@ class WorkerToolName(StrEnum):
     FIND_FILES = "find_files"
     RUN_TEST = "run_test"
     RUN_COMMAND = "run_command"
+    FILE_INFO = "file_info"
+    CREATE_DIRECTORY = "create_directory"
+    EDIT_FILE = "edit_file"
+    INSPECT_PYTHON_ENVIRONMENT = "inspect_python_environment"
+    INSPECT_NODE_PROJECT = "inspect_node_project"
 
 
 class WorkerToolCall(BaseModel):

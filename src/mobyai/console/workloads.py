@@ -161,16 +161,16 @@ class Workloads:
                     raise ValueError('Stop running workloads before pre-building final inference')
             config=self.runtime.config.final_fail.model_copy(deep=True)
             self.final_build_task=asyncio.create_task(self._build_final_job(config))
-            return {'state':'building','message':'Pre-build started; it downloads the configured weights, compiles and smoke-tests Colibri.'}
+            return {'state':'building','message':'Pre-build started; it prepares your local model, compiles and smoke-tests Colibri.'}
 
     async def _build_final_job(self, config):
-        from mobyai.final_pass.runtime import build, publish
+        from mobyai.final_pass.runtime import build, publish_best_effort
         try:
             await build(config,self.runtime.config)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            publish(config,'failed',str(exc))
+            publish_best_effort(config,'failed',str(exc))
 
     async def edit_plan(self, payload):
         from mobyai.review import editing

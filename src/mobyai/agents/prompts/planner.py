@@ -1,5 +1,7 @@
 """Agent prompt templates. Application code owns state and permissions."""
 
+from mobyai.agents.prompts.environment import COMMAND_ENVIRONMENT_GUIDANCE
+
 SYSTEM_PROMPT = """\
 You are the MobyAI Planner, the lead software architect for a local coding harness.
 
@@ -109,7 +111,10 @@ Rules:
 - Paths must be project-relative (no .., no absolute paths).
 - Prefer creating tests alongside implementation tasks.
 - You may inspect an existing workspace with read-only inspect_calls first
-  (read_file, list_directory, search_code, glob, research_search). You cannot write files,
+  (read_file, list_directory, search_code, glob, research_search, file_info,
+  inspect_python_environment, inspect_node_project). The local MCP inspection tools
+  take path; inspect_python_environment also accepts a list of package names in packages.
+  They inspect disk metadata only, not runtime availability. You cannot write files,
   run tests, or run commands. After a few inspect turns, return a full plan.
 - Return ONLY JSON that matches the required schema. No markdown. No explanation.
 
@@ -147,6 +152,10 @@ Node validation prerequisites:
   a missing executable. Report network/access/runtime blockers with their evidence.
 
 Planner: encode dependency preparation in task requirements and plan npm-script validation.
+For ERESOLVE, inspect exact declared/installed versions and peer ranges with
+inspect_node_project. Preserve matching-state failure memory across task renames;
+require a new compatibility hypothesis before another install. Do not treat a
+resolver conflict as a sampling problem or weaken validation to bypass it.
 
 Provide rationale_summary: a concise evidence-backed explanation of the plan, not private chain-of-thought. For existing-codebase reviews, populate review_influence with concrete report findings and their effect on tasks. Preserve existing behavior outside the objective and plan regression checks.
 
@@ -323,7 +332,10 @@ Rules:
 - Keep integration coverage intact when replacing tasks and update affected
   dependencies so surviving work can still be validated.
 - You may inspect the workspace with read-only inspect_calls first
-  (read_file, list_directory, search_code, glob, research_search). You cannot write files.
+  (read_file, list_directory, search_code, glob, research_search, file_info,
+  inspect_python_environment, inspect_node_project). The local MCP inspection tools
+  take path; inspect_python_environment also accepts a list of package names in packages.
+  They inspect disk metadata only, not runtime availability. You cannot write files.
 - Return ONLY JSON that matches DAGPatch. No markdown. No explanation.
 
 Inspect the existing package.json and failure log before replacing a task that failed an npm command. Preserve the acceptance criteria and fix the missing script, command, or dependency, not merely the task identifier.
@@ -361,6 +373,10 @@ Node validation prerequisites:
   a missing executable. Report network/access/runtime blockers with their evidence.
 
 Planner: encode dependency preparation in task requirements and plan npm-script validation.
+For ERESOLVE, inspect exact declared/installed versions and peer ranges with
+inspect_node_project. Preserve matching-state failure memory across task renames;
+require a new compatibility hypothesis before another install. Do not treat a
+resolver conflict as a sampling problem or weaken validation to bypass it.
 
 Provide rationale_summary explaining the observed failure, why this patch addresses it, and how it will be validated. Do not invent evidence or unrecorded reasoning.
 
@@ -454,7 +470,8 @@ Read-only inspect results from the harness (the workspace was not modified):
 
 Inspect turns remaining: {remaining}.
 If you have enough context, return a full PlannerOutput JSON (no inspect_calls).
-Otherwise return more inspect_calls using only read_file, list_directory, search_code, or glob, or research_search.
+Otherwise return more inspect_calls using the documented read-only tools, including
+file_info, inspect_python_environment or inspect_node_project when checking prerequisites.
 """
 
 INSPECT_DONE_PROMPT = """\
@@ -478,3 +495,6 @@ Inspect is finished or unavailable. Return a DAGPatch JSON only.
 Supersede the failed task. Do not touch PASSED tasks. Every new task needs
 acceptance_criteria and test_commands. Do not include markdown or explanation.
 """
+
+SYSTEM_PROMPT += "\n" + COMMAND_ENVIRONMENT_GUIDANCE
+REPLAN_SYSTEM_PROMPT += "\n" + COMMAND_ENVIRONMENT_GUIDANCE

@@ -11,6 +11,20 @@ from uuid import uuid4
 _current = ContextVar('minutes_record', default=None)
 
 
+MAX_READ_BYTES = 32_000_000
+
+
+def canonical_path(path):
+    """Resolve workspace aliases, never links within the protected minutes tree."""
+    path = Path(path)
+    if '..' in path.parts:
+        raise ValueError('Parent traversal is not allowed in minutes paths')
+    for base in (path, *path.parents):
+        if base.name == 'mobyMinutes':
+            return base.parent.resolve() / base.name / path.relative_to(base)
+    return path
+
+
 def root(workspace):
     workspace = Path(workspace).resolve()
     path = workspace / 'mobyMinutes'
@@ -21,7 +35,7 @@ def root(workspace):
 
 
 def write(path, data):
-    path = Path(path)
+    path = canonical_path(path)
     if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
         raise ValueError('Refusing symlinked minutes path')
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -35,8 +49,8 @@ def write(path, data):
 
 
 def read(path):
-    path = Path(path)
-    if path.is_symlink() or any(parent.is_symlink() for parent in path.parents) or path.stat().st_size > 32_000_000:
+    path = canonical_path(path)
+    if path.is_symlink() or any(parent.is_symlink() for parent in path.parents) or path.stat().st_size > MAX_READ_BYTES:
         raise ValueError('Unsafe or oversized minutes file')
     return json.loads(path.read_text(encoding='utf-8'))
 
@@ -137,7 +151,7 @@ def capture_outcome(project, result):
 
 
 def write_text(path, text):
-    path=Path(path)
+    path=canonical_path(path)
     if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
         raise ValueError('Unsafe minutes path')
     temporary=path.with_name('.'+path.name+'.'+uuid4().hex)

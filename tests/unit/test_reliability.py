@@ -100,7 +100,7 @@ async def test_missing_executable_is_diagnostic_not_crash(tmp_path):
 
 @pytest.mark.parametrize('error,category,eligible', [
     ('npm error Missing script: "test:bpm"','npm_missing_script',True),
-    ('npm ERR! ERESOLVE unable to resolve dependency tree','npm_dependency_conflict',True),
+    ('npm ERR! ERESOLVE unable to resolve dependency tree','npm_dependency_conflict',False),
     ('npm ERR! EAI_AGAIN registry.npmjs.org','network',False),
     ('npm ERR! EACCES','access',False),
     ('cudaMalloc out of memory','capacity',False),

@@ -44,7 +44,10 @@ def encode(value):
 class RecordsRepository:
     def __init__(self, db, artifact_root: Path | None):
         self._db = db
-        self.artifact_root = artifact_root
+        # The configured storage location may use a symlink (for example a
+        # workspace alias). Pin that trusted root once; _path still rejects
+        # symlinks introduced into the resolved artifact tree afterwards.
+        self.artifact_root = artifact_root.resolve() if artifact_root is not None else None
         self._blobs: dict[str, bytes] = {}
 
     async def _run(self, function):
@@ -125,7 +128,10 @@ class RecordsRepository:
                                    (project_id, task.task_id, attempt.attempt_number)).fetchone()
                 if row:
                     return json.loads(row[0])
-                run = json.loads(conn.execute('SELECT data FROM record_runs WHERE project_id=?', (project_id,)).fetchone()[0])
+                row = conn.execute('SELECT data FROM record_runs WHERE project_id=?', (project_id,)).fetchone()
+                if row is None:
+                    raise LookupError(f'No captured run for project {project_id}; step capture requires successful run initialization')
+                run = json.loads(row[0])
                 stamp = now()
                 data = dict(id=str(uuid4()), run_id=run['id'], project_id=project_id,
                             created_at=stamp, updated_at=stamp, task_id=task.task_id,

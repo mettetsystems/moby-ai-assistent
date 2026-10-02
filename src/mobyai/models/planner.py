@@ -79,6 +79,9 @@ class PlannerInspectToolName(StrEnum):
     SEARCH_CODE = "search_code"
     GLOB = "glob"
     FIND_FILES = "find_files"
+    FILE_INFO = "file_info"
+    INSPECT_PYTHON_ENVIRONMENT = "inspect_python_environment"
+    INSPECT_NODE_PROJECT = "inspect_node_project"
 
 
 class PlannerInspectCall(BaseModel):

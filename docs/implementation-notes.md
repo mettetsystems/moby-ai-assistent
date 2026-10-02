@@ -164,7 +164,11 @@ Design record for major subsystems. Each section covers what it does, why it exi
 
 ### Structured parse and repair (`structured.py`)
 
-**What it does.** Extracts JSON from raw model text (markdown fences or surrounding prose), validates with Pydantic, and on failure appends a bounded repair turn that quotes the validation errors. It never accepts invalid JSON silently.
+**What it does.** Supplies the exact Pydantic schema on every initial request in both JSON and schema-constrained modes. Extracts JSON from raw model text (markdown fences or surrounding prose), validates with Pydantic, and on failure adds a bounded repair turn that quotes the validation errors.
+
+Worker responses have one narrow compatibility rule: string-valued `summary` annotations on individual `tool_calls` can be removed locally. The complete result must then pass the unchanged strict schema before any tools execute. Tool names, arguments, outer fields, and other extra fields are never rewritten or discarded. A `schema_normalized` record retains the raw response and removed field paths. This applies to both initial and repair responses, even with model repairs disabled.
+
+Each model repair keeps the original task and executed tool history plus only the latest rejected response and validation error, preventing failed repair replies from accumulating. If repairs are exhausted, the existing attempt/checkpoint path preserves prior edits and validation evidence. Recovery prompts include the primary worker error alongside harness test output, including when those tests passed.
 
 **Why it exists.** Local models omit braces, wrap JSON in fences, or add extra keys (`extra="forbid"`). Infinite repair loops waste GPU hours.
 

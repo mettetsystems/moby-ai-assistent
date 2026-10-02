@@ -667,6 +667,21 @@ the idle console to load them for new workload processes. Prompt changes alone
 are not evidence of improved model performance; compare workload completion,
 validation failures, repeated repairs, and runtime on representative projects.
 
+### Local MCP tools for code iteration
+
+Moby now exposes `file_info`, `create_directory`, `edit_file`,
+`inspect_python_environment`, and `inspect_node_project` through two local stdio
+MCP servers. They launch on demand with the assigned workspace; no separate
+daemon or model-selected command is required. The planner gets the read-only
+inspection tools, while the worker also gets exact-text editing and directory
+creation. Existing command execution and sandbox policy still apply.
+
+Use `edit_file` after reading a file when a unified diff fails. It requires one
+exact match and supports a file hash guard. Environment inspection reports local
+metadata rather than installing dependencies or claiming that tests pass.
+See [the log review and tool reference](docs/local-mcp-tools.md) for the observed
+failure counts, schemas, bounds, evidence capture and MCP client setup.
+
 ### Targeted research through local MCP
 
 Install the optional server/client dependency:
@@ -1140,16 +1155,31 @@ planner. The default is **GLM-5.2** (`zai-org/GLM-5.2`), using Colibri's documen
 GLM 5-family package, not Qwen3-Coder. Qwen3-Coder-480B remains unsupported by the
 pinned runtime. All existing workloads retain the ordinary behavior until enabled.
 
-1. Choose the model identity, compatible weights repository and an absolute storage
-   directory. The GLM container needs roughly **372 GB plus headroom**; choose a
-   sufficiently large drive, preferably fast SSD storage. It does not fit in
-   204 GB of free space. The model ID labels the API; it does not convert weights.
-2. Save settings, then click **Pre-build inference**. Install `git`, `make`, and a C
-   compiler first (Fedora: `sudo dnf install git make gcc`). The job fetches the
-   pinned Colibri source, checks repository size/free space, downloads a pinned
-   weights snapshot, compiles the CPU engine, then loads it for a generation smoke
-   test. Check status or cancel from Settings. Build and inference logs live under
-   the displayed directory; partial downloads are retained for retry.
+1. Set **Local model directory** to an existing complete Colibri-compatible model
+   folder (including `config.json`, weights, tokenizer, and any required metadata).
+   Set **NVMe runtime storage directory** to a directory on your NVMe drive.
+   No model weights are downloaded. The model identity labels the API; it does
+   not convert weights or add support for an incompatible architecture.
+   Choose **Auto** to use files directly when they are on the same filesystem as
+   runtime storage, or copy them there otherwise. Auto checks resolved file
+   locations, including snapshot symlinks; it does not detect drive hardware.
+   **Use model in place** and **Copy model to NVMe storage** override that choice.
+   Copies leave your original model untouched. Allow space for copied files plus
+   10 GiB of build headroom; in-place use only requires the build headroom.
+2. Save settings, then click **Pre-build inference**. Install `git`, `make`, a C
+   compiler, and `cp` first (Fedora: `sudo dnf install git make gcc coreutils`).
+   The job inspects local files, prepares their placement, fetches the pinned
+   Colibri engine source if needed, compiles, and runs a generation smoke test.
+   Fetching engine source may still need internet access. Settings refreshes every
+   three seconds with stages, local file sizes, copy progress by file, compilation,
+   and model-loading output. Each preview shows the latest 200 lines / 32 KiB;
+   full `build.log` and `inference.log` files remain in the displayed directory.
+   Some operations may be quiet for several minutes. Cancellation retains completed
+   copies for retry; an interrupted file is copied again. Copied models can be used
+   after disconnecting the source drive. File sizes and modification times are
+   checked before inference; this is not a cryptographic content verification.
+   Older `weights_repo` settings remain loadable but are no longer used to fetch
+   weights. Set a local model directory and pre-build after upgrading.
 3. Wait for **ready**, enable local final passes and save. Changing model or runtime
    parameters invalidates readiness and requires another pre-build. Readiness means
    the engine generated text, not that this model is proven to repair your project.
@@ -1194,3 +1224,7 @@ managed by a local MCP server, with offline execution and pinned dependency-only
 downloads. The harness owns policy; models cannot enable networking or host privileges.
 Disabled by default. Use a pinned runtime image or `sandbox.auto_prepare: true`
 with an empty image to build/cache the trusted Python/Qt/Node profile automatically.
+
+Sandbox command execution supports project symlinks and absolute project paths;
+workspace listings preserve link names. External host targets are not exposed, and
+protected history mounts retain their restrictions. See [sandbox boundaries](docs/sandbox.md).

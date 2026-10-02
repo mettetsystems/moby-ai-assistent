@@ -29,13 +29,18 @@ class Workspace:
         try:
             resolved = candidate.resolve(strict=must_exist)
         except FileNotFoundError as exc:
-            raise WorkspaceError(f"Path not found: {user_path}") from exc
+            raise WorkspaceError(f"Path not found or dangling symlink: {user_path}") from exc
+        except (OSError, RuntimeError) as exc:
+            raise WorkspaceError(f"Cannot resolve path (possibly a symlink loop): {user_path}: {exc}") from exc
         if not self.contains(resolved):
             raise PathEscapeError(f"Path escapes workspace: {user_path}")
         return resolved
 
     def contains(self, path: Path | str) -> bool:
-        resolved = Path(path).resolve()
+        try:
+            resolved = Path(path).resolve()
+        except (OSError, RuntimeError):
+            return False
         return any(_is_under(resolved, root) for root in self.allowed_roots())
 
     def allowed_roots(self) -> tuple[Path, ...]:

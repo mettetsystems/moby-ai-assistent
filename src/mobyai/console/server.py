@@ -168,6 +168,10 @@ def make_handler(service: ConsoleService) -> type[BaseHTTPRequestHandler]:
             if parsed.path == "/api/settings":
                 self._json(200, service.settings())
                 return
+            if parsed.path == "/api/final-build":
+                from mobyai.final_pass.runtime import status
+                self._json(200, status(service.runtime.config.final_fail))
+                return
             if parsed.path == "/api/projects":
                 self._json(200, {"projects": service.projects()})
                 return

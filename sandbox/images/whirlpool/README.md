@@ -17,6 +17,7 @@ Workload validation on a temporary source copy found:
   137 under the 4 GB sandbox memory limit. Full workload validation did not pass.
 
 The original workload was not edited, resumed, or switched to sandbox mode. Its
-.venv contains symlinks, rejected by the current strict sandbox. Prepare a clean
-workspace before enabling the sample configuration. Host container integration
+.venv symlinks were rejected during the original verification; the sandbox now
+supports ordinary project symlinks. Existing environments still require compatible
+container runtimes and libraries. Host container integration
 remains outside the offline worker sandbox. See ../../../docs/sandbox.md for policy.

@@ -33,11 +33,14 @@ def file_versions(workspace, paths):
 
 
 async def evidence_for(store, project_id, task, workspace, error):
+    from mobyai.memory.tool_failures import recall_tool_failures
+    tool_failures = await recall_tool_failures(store, project_id, task, workspace, token_budget=500)
     signature = fingerprint(error, task.test_commands)
     versions = file_versions(workspace, [*task.target_files,*task.test_files,*task.required_context])
     history = await store.events.list_for_project(project_id)
     previous = [e.payload for e in history if e.event=='recovery_evidence' and e.payload.get('failure_signature')==signature][-4:]
     return {'failure_signature':signature,'files':versions,'previous_attempts':previous,
+            'tool_failures': tool_failures,
             'guidance':'Separate observed facts from hypotheses. Supply a discriminating check and its expected result. Do not repeat a disproven fix without new evidence.'}
 
 
@@ -54,5 +57,6 @@ async def record_decision(store, project_id, task, decision, evidence):
         task_id=task.task_id, attempt=task.attempt_count,component='recovery',event='recovery_evidence',
         payload={'failure_signature':evidence['failure_signature'],'files':evidence['files'],
                  'instruction':instruction[:2000],'repeated_instruction':repeated,
-                 'validation_commands':task.test_commands}))
+                 'validation_commands':task.test_commands,
+                 'tool_failures':evidence.get('tool_failures','')}))
     return decision

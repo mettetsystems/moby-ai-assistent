@@ -17,6 +17,7 @@ from mobyai.context.errors import ContextBudgetError
 from mobyai.dag.graph import TaskGraph
 from mobyai.engine.state_machine import ProjectStateMachine
 from mobyai.execution.commands import CommandResult, CommandRunner
+from mobyai.execution.argv import CommandSyntaxError
 from mobyai.execution.errors import WorkspaceError
 from mobyai.execution.filesystem import WorkspaceFilesystem
 from mobyai.execution.logs import AttemptLogStore
@@ -152,6 +153,10 @@ async def execute_task(
     remediation = extra_instruction or ""
 
     try:
+        # Legacy saved contracts must be executable before asking a Worker to
+        # change files or reinstall dependencies. Validation below records errors.
+        for saved_command in task.test_commands:
+            split_command(saved_command)
         if services is not None:
             await services.ensure_role_available(AgentRole.WORKER)
         remediation = extra_instruction or await _remediation_from_store(
@@ -175,7 +180,12 @@ async def execute_task(
             await emit("worker_turn", {"turn": _turn + 1, "response": worker_result.model_dump(mode="json")})
             _extend_unique(references_used, worker_result.reference_urls_used)
             worker_result = worker_result.model_copy(update={"reference_urls_used":references_used[:]})
-            turn_outcomes = await dispatcher.execute_all(worker_result.tool_calls)
+            from mobyai.memory.tool_failures import record_tool_result
+            turn_outcomes = []
+            for call in worker_result.tool_calls:
+                outcome = await dispatcher.execute(call)
+                turn_outcomes.append(outcome)
+                await record_tool_result(store, project.project_id, task, workspace, call, outcome)
             for outcome in turn_outcomes:
                 await _record_event(store, project, task.task_id, attempt.attempt_number,
                     "tool_finished", now or datetime.now(UTC), {"turn": _turn + 1,
@@ -186,7 +196,9 @@ async def execute_task(
             _extend_unique(changed_files, _changed_from(turn_outcomes))
             if worker_result.done or not worker_result.tool_calls:
                 break
-            if getattr(agent, "refresh_context_enabled", False):
+            mutation_attempted = any(call.name.value in {"write_file", "apply_patch", "edit_file", "create_directory", "run_command", "run_test"}
+                                     for call in worker_result.tool_calls)
+            if mutation_attempted or getattr(agent, "refresh_context_enabled", False):
                 context = await packer.build_worker_context(project.project_id, task.task_id,
                     token_budget, remediation_instruction=remediation)
             extra_messages = [
@@ -199,9 +211,14 @@ async def execute_task(
                     ),
                 ),
             ]
+            if mutation_attempted:
+                from mobyai.context.history import invalidate_stale_reads
+                extra_messages = invalidate_stale_reads(extra_messages)
             if getattr(agent, "compact_history_enabled", False):
                 from mobyai.context.history import compact_history
                 extra_messages = compact_history(extra_messages)
+    except CommandSyntaxError:
+        pass  # The harness validation records the exact error and routes repair.
     except (WorkspaceError, ContextBudgetError) as exc:
         inference_error = inference_error or (("Context budget exhausted: " if isinstance(exc,ContextBudgetError) else "") + str(exc))
 
@@ -463,8 +480,17 @@ async def _run_harness_tests(
 ) -> tuple[list[CommandResult], str | None]:
     if not task.test_commands:
         return [], None
-    argv_list = [split_command(command) for command in task.test_commands]
-    results = await tests.run_all(argv_list, timeout_seconds=timeout_seconds)
+    argv_list = []
+    try:
+        for command in task.test_commands:
+            argv_list.append(split_command(command))
+    except CommandSyntaxError as exc:
+        # Old saved plans also need diagnostics, not an uncaught parse error or
+        # another environment installation. Validate all commands before running.
+        results = [CommandResult(command=[command], exit_code=2,
+                                 stdout="", stderr=str(exc), duration_seconds=0)]
+    else:
+        results = await tests.run_all(argv_list, timeout_seconds=timeout_seconds)
     log_path: str | None = None
     if results:
         stored = await logs.persist(task.task_id, max(task.attempt_count, 1), results[-1])
@@ -484,7 +510,7 @@ def _missing_required_files(workspace: Workspace, task: Task) -> list[str]:
         except WorkspaceError:
             missing.append(path)
             continue
-        if not target.is_file():
+        if not (target.is_dir() if path.endswith("/") else target.is_file()):
             missing.append(path)
     return missing
 

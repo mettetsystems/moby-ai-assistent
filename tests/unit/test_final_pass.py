@@ -111,15 +111,14 @@ def test_model_settings_invalidate_build_identity():
 
 async def test_prebuild_refuses_insufficient_disk_without_downloading(tmp_path,monkeypatch):
     from mobyai.final_pass import runtime as adapter
-    from huggingface_hub import HfApi
     _,runtime=_runtime(tmp_path)
-    config=FinalFailConfig(directory=tmp_path/'runtime')
+    model=local_model(tmp_path)
+    config=FinalFailConfig(directory=tmp_path/'runtime', model_directory=model)
     calls=[]
     async def command(argv,*args,**kwargs): calls.append([str(a) for a in argv])
     monkeypatch.setattr(adapter,'command',command)
     monkeypatch.setattr(adapter.shutil,'which',lambda _: '/bin/tool')
     monkeypatch.setattr(adapter.shutil,'disk_usage',lambda _:SimpleNamespace(free=1))
-    monkeypatch.setattr(HfApi,'model_info',lambda *a,**k:SimpleNamespace(sha='fixed',siblings=[SimpleNamespace(size=400*1024**3)]))
     await adapter.build(config,runtime.config)
     assert status(config)['state']=='failed'
     assert 'larger' in status(config)['message']
@@ -207,3 +206,255 @@ HTTPServer(('127.0.0.1',port),Handler).serve_forever()
         assert response.content=='READY'
         pid=int((source/'c'/'pid').read_text())
     with pytest.raises(ProcessLookupError): os.kill(pid,0)
+
+
+def test_colibri_accepts_symlinked_storage_base(tmp_path):
+    from mobyai.final_pass import runtime as adapter
+    storage = tmp_path / 'data-drive'
+    storage.mkdir()
+    link = tmp_path / 'MobyAI'
+    link.symlink_to(storage, target_is_directory=True)
+    config = FinalFailConfig(directory=link / 'colibri')
+    original_identity = identity(config)
+    adapter.publish(config, 'ready', 'Built')
+    root, _, _ = adapter.paths(config)
+    assert root == storage / 'colibri' / original_identity[:20]
+    assert status(config)['state'] == 'ready'
+    assert identity(config) == original_identity
+
+
+def test_colibri_rejects_redirected_build_directory_and_status(tmp_path):
+    from mobyai.final_pass import runtime as adapter
+    config = FinalFailConfig(directory=tmp_path / 'runtime')
+    root, _, _ = adapter.paths(config)
+    root.parent.mkdir()
+    target = tmp_path / 'outside'
+    target.mkdir()
+    root.symlink_to(target, target_is_directory=True)
+    with pytest.raises(ValueError, match='symlinked Colibri'):
+        adapter.publish(config, 'ready', 'Built')
+    root.unlink()
+    root.mkdir()
+    original = target / 'keep.json'
+    original.write_text('untouched')
+    (root / 'status.json').symlink_to(original)
+    with pytest.raises(ValueError, match='symlinked minutes'):
+        adapter.publish(config, 'ready', 'Built')
+    assert original.read_text() == 'untouched'
+
+
+async def test_build_status_failure_is_visible_without_secondary_exception(tmp_path, monkeypatch, caplog):
+    from mobyai.final_pass import runtime as adapter
+    _, runtime = _runtime(tmp_path)
+    config = FinalFailConfig(directory=tmp_path / 'runtime')
+    real_write = adapter.write
+    def denied(*args):
+        raise PermissionError('Read-only storage')
+    monkeypatch.setattr(adapter, 'write', denied)
+    monkeypatch.setattr(adapter.shutil, 'which', lambda name: '/bin/tool')
+    await adapter.build(config, runtime.config)
+    assert status(config)['state'] == 'failed'
+    assert 'Read-only storage' in status(config)['message']
+    assert 'Could not persist' in caplog.text
+    monkeypatch.setattr(adapter, 'write', real_write)
+    adapter.publish(config, 'ready', 'Recovered')
+    assert status(config)['message'] == 'Recovered'
+    await runtime.aclose()
+
+
+async def test_build_cancellation_survives_status_write_failure(tmp_path, monkeypatch):
+    from mobyai.final_pass import runtime as adapter
+    _, runtime = _runtime(tmp_path)
+    config = FinalFailConfig(directory=tmp_path / 'runtime', model_directory=local_model(tmp_path))
+    async def cancel(*args, **kwargs):
+        raise asyncio.CancelledError()
+    real_write = adapter.write
+    def write(path, data):
+        if data.get('state') == 'cancelled':
+            raise PermissionError('Read-only storage')
+        real_write(path, data)
+    monkeypatch.setattr(adapter, 'command', cancel)
+    monkeypatch.setattr(adapter, 'write', write)
+    monkeypatch.setattr(adapter.shutil, 'which', lambda name: '/bin/tool')
+    with pytest.raises(asyncio.CancelledError):
+        await adapter.build(config, runtime.config)
+    assert status(config)['state'] == 'cancelled'
+    adapter._status_fallback.pop(identity(config))
+    await runtime.aclose()
+
+
+def test_progress_log_tail_is_bounded_and_preserves_unicode(tmp_path):
+    from mobyai.final_pass.runtime import log_tail
+    log = tmp_path / 'build.log'
+    log.write_text('old output\n' * 10000 + '\n'.join(f'下載 {i}' for i in range(250)), encoding='utf-8')
+    result = log_tail(log)
+    assert result['truncated']
+    assert len(result['text'].splitlines()) == 200
+    assert result['text'].endswith('下載 249')
+    assert result['bytes'] == log.stat().st_size
+    assert result['updated_at']
+    log.write_text('10%\r20%\r100%\n', encoding='utf-8')
+    assert log_tail(log)['text'] == '10%\n20%\n100%'
+
+
+def test_progress_log_refuses_symlinks_and_handles_missing_file(tmp_path):
+    from mobyai.final_pass.runtime import log_tail
+    log = tmp_path / 'build.log'
+    assert log_tail(log)['text'] == ''
+    target = tmp_path / 'private'
+    target.write_text('private data')
+    log.symlink_to(target)
+    result = log_tail(log)
+    assert 'error' in result
+    assert 'private data' not in str(result)
+
+
+async def test_progress_exposes_subprocess_output_before_completion(tmp_path):
+    import sys
+    from mobyai.final_pass import runtime as adapter
+    config = FinalFailConfig(directory=tmp_path / 'colibri')
+    adapter.publish(config, 'ready', 'Test stage')
+    root, _, _ = adapter.paths(config)
+    task = asyncio.create_task(adapter.command(
+        [sys.executable, '-u', '-c', 'import time; print("Compiling worker", flush=True); time.sleep(30)'],
+        root / 'build.log'))
+    try:
+        for _ in range(100):
+            result = status(config)
+            if 'Compiling worker' in result['logs']['build.log']['text']:
+                break
+            await asyncio.sleep(.05)
+        else:
+            pytest.fail('Subprocess output was not visible while running')
+        assert not task.done()
+        assert 'Test stage' in result['logs']['build.log']['text']
+        assert result['updated_at']
+        (root / 'inference.log').write_text('Loading model layers…', encoding='utf-8')
+        assert 'Loading model layers…' in status(config)['logs']['inference.log']['text']
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+def local_model(tmp_path):
+    model=tmp_path/'local-model'
+    model.mkdir()
+    (model/'config.json').write_text('{"model_type":"test"}')
+    (model/'model.safetensors').write_bytes(b'local model fixture')
+    return model
+
+
+@pytest.mark.parametrize('placement', ['auto', 'in_place', 'copy'])
+async def test_prepare_local_model_placement(tmp_path, monkeypatch, placement):
+    from mobyai.final_pass import runtime as adapter
+    model=local_model(tmp_path)
+    config=FinalFailConfig(directory=tmp_path/'nvme',model_directory=model,model_placement=placement)
+    root,_,_=adapter.paths(config)
+    root.mkdir(parents=True)
+    monkeypatch.setattr(adapter.shutil,'disk_usage',lambda _:SimpleNamespace(free=10**15))
+    weights,manifest=await adapter.prepare_weights(config,root,root/'build.log')
+    assert (weights/'model.safetensors').read_bytes()==b'local model fixture'
+    assert manifest['placement']==('copy' if placement=='copy' else 'in_place')
+    assert (weights==model)==(placement!='copy')
+    if placement=='copy':
+        async def unexpected_copy(*args,**kwargs):
+            pytest.fail('Completed files should be reused')
+        monkeypatch.setattr(adapter,'command',unexpected_copy)
+        assert (await adapter.prepare_weights(config,root,root/'build.log'))[0]==weights
+    assert (model/'model.safetensors').read_bytes()==b'local model fixture'
+
+
+async def test_missing_local_model_fails_without_network(tmp_path, monkeypatch):
+    from mobyai.final_pass import runtime as adapter
+    _,runtime=_runtime(tmp_path)
+    config=FinalFailConfig(directory=tmp_path/'nvme')
+    command=AsyncMock()
+    monkeypatch.setattr(adapter,'command',command)
+    monkeypatch.setattr(adapter.shutil,'which',lambda _: '/bin/tool')
+    await adapter.build(config,runtime.config)
+    assert status(config)['state']=='failed'
+    assert 'Local model directory' in status(config)['message']
+    command.assert_not_called()
+    await runtime.aclose()
+
+
+async def test_local_build_uses_prepared_model_without_download(tmp_path, monkeypatch):
+    from mobyai.final_pass import runtime as adapter
+    _,runtime=_runtime(tmp_path)
+    model=local_model(tmp_path)
+    config=FinalFailConfig(directory=tmp_path/'nvme',model_directory=model)
+    calls=[]
+    async def command(argv,*args,**kwargs): calls.append(list(map(str,argv)))
+    @asynccontextmanager
+    async def fake_inference(config,**kwargs):
+        yield SimpleNamespace(generate=AsyncMock(return_value=SimpleNamespace(content='READY')))
+    monkeypatch.setattr(adapter,'command',command)
+    monkeypatch.setattr(adapter,'inference',fake_inference)
+    monkeypatch.setattr(adapter.shutil,'which',lambda _: '/bin/tool')
+    monkeypatch.setattr(adapter.shutil,'disk_usage',lambda _:SimpleNamespace(free=10**15))
+    await adapter.build(config,runtime.config)
+    assert status(config)['state']=='ready'
+    assert calls[-1][-2:]==['--model',str(model)]
+    assert not any('download' in arg for call in calls for arg in call)
+    root,_,_=adapter.paths(config)
+    manifest=minutes.read(root/'build-manifest.json')
+    assert manifest['smoke_test_passed']
+    assert manifest['source_directory']==str(model)
+    await runtime.aclose()
+
+
+async def test_auto_copies_other_storage_and_no_longer_needs_source(tmp_path, monkeypatch):
+    from mobyai.final_pass import runtime as adapter
+    model=local_model(tmp_path)
+    config=FinalFailConfig(directory=tmp_path/'nvme',model_directory=model)
+    root,_,_=adapter.paths(config)
+    root.mkdir(parents=True)
+    monkeypatch.setattr(adapter,'same_storage',lambda *args:False)
+    monkeypatch.setattr(adapter.shutil,'disk_usage',lambda _:SimpleNamespace(free=10**15))
+    weights,manifest=await adapter.prepare_weights(config,root,root/'build.log')
+    assert manifest['placement']=='copy'
+    minutes.write(root/'build-manifest.json',manifest)
+    model.rename(tmp_path/'disconnected-source')
+    assert adapter.prepared_weights(root,None)==weights
+    (weights/'model.safetensors').write_bytes(b'changed')
+    with pytest.raises(ValueError,match='files changed'):
+        adapter.prepared_weights(root,None)
+
+
+async def test_cancelled_copy_is_not_accepted_as_complete(tmp_path, monkeypatch):
+    from mobyai.final_pass import runtime as adapter
+    from pathlib import Path
+    model=local_model(tmp_path)
+    config=FinalFailConfig(directory=tmp_path/'nvme',model_directory=model,model_placement='copy')
+    root,_,_=adapter.paths(config)
+    root.mkdir(parents=True)
+    monkeypatch.setattr(adapter.shutil,'disk_usage',lambda _:SimpleNamespace(free=10**15))
+    command=adapter.command
+    async def cancel(argv,*args,**kwargs):
+        Path(argv[-1]).write_bytes(b'incomplete')
+        raise asyncio.CancelledError()
+    monkeypatch.setattr(adapter,'command',cancel)
+    with pytest.raises(asyncio.CancelledError):
+        await adapter.prepare_weights(config,root,root/'build.log')
+    assert not list((root/'weights').rglob('config.json'))
+    monkeypatch.setattr(adapter,'command',command)
+    weights,_=await adapter.prepare_weights(config,root,root/'build.log')
+    assert (weights/'config.json').read_bytes()==(model/'config.json').read_bytes()
+
+
+def test_local_model_config_round_trip_and_legacy_compatibility(tmp_path):
+    from pydantic import ValidationError
+    from mobyai.console.settings import serialize_role_settings, apply_role_settings
+    _,runtime=_runtime(tmp_path)
+    config=runtime.config
+    payload=serialize_role_settings(config)
+    payload['final_fail'].update(model_directory=str(tmp_path/'models'),model_placement='copy')
+    apply_role_settings(config,payload)
+    assert config.final_fail.model_directory==tmp_path/'models'
+    assert config.final_fail.model_placement=='copy'
+    assert FinalFailConfig(weights_repo='legacy/model').model_directory is None
+    with pytest.raises(ValidationError):
+        FinalFailConfig(model_directory='relative/model')
+    with pytest.raises(ValidationError):
+        FinalFailConfig(model_placement='download')

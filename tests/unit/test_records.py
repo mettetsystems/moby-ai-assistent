@@ -358,3 +358,77 @@ async def test_symlink_export_is_rejected(store, tmp_path):
     with pytest.raises(ValueError, match='symlink'):
         await export_records(store, project.project_id, link / 'export')
     assert not (real / 'export').exists()
+
+
+@pytest.mark.parametrize('linked_root', [False, True])
+async def test_capture_through_symlinked_storage_parent(tmp_path, linked_root):
+    real = tmp_path / 'real'
+    real.mkdir()
+    link = tmp_path / 'link'
+    link.symlink_to(real, target_is_directory=True)
+    artifact_root = real / 'state.db.records'
+    if linked_root:
+        artifact_root = tmp_path / 'artifacts'
+        artifact_root.mkdir()
+        (real / 'state.db.records').symlink_to(artifact_root, target_is_directory=True)
+    project = make_project(workspace_root=tmp_path / 'workspace')
+    async with SqliteStateStore(link / 'state.db') as store:
+        await store.projects.save(project)
+        bundle = await store.records.snapshot(project.project_id)
+        assert bundle.run.completeness == 'complete'
+        assert store.records.artifact_root == artifact_root
+        for ref in bundle.artifacts:
+            assert await store.records.read_artifact(ref)
+        await export_records(store, project.project_id, tmp_path / 'export')
+    async with SqliteStateStore(link / 'state.db') as store:
+        reopened = await store.records.snapshot(project.project_id)
+        assert reopened.run.id == bundle.run.id
+        await store.delete_project(project.project_id)
+        assert not list((real / 'state.db.records').glob('*/*'))
+
+
+@pytest.mark.parametrize('component', ['root', 'shard', 'blob'])
+async def test_artifact_symlinks_introduced_after_initialization_are_rejected(tmp_path, component):
+    async with SqliteStateStore(tmp_path / 'state.db') as store:
+        project = make_project(workspace_root=tmp_path)
+        await store.projects.save(project)
+        bundle = await store.records.snapshot(project.project_id)
+        ref = bundle.artifacts[0]
+        body = json.loads(await store.records.read_artifact(ref))
+        blob = store.records._path(ref.sha256)
+        target = {'root': store.records.artifact_root, 'shard': blob.parent, 'blob': blob}[component]
+        moved = tmp_path / 'moved'
+        target.rename(moved)
+        target.symlink_to(moved, target_is_directory=component != 'blob')
+        with pytest.raises(ValueError, match='symlinked record artifact'):
+            await store.records.read_artifact(ref)
+        with pytest.raises(ValueError, match='symlinked record artifact'):
+            await store.records.append(project.project_id, scope='run', kind='test',
+                                       actor='harness', payload=body)
+
+
+async def test_failed_run_initialization_reports_missing_run_without_type_error(store, tmp_path, monkeypatch, caplog):
+    project = make_project(workspace_root=tmp_path)
+    task = make_task('STEP_001')
+    attempt = TaskAttempt(project_id=project.project_id, task_id=task.task_id,
+                          attempt_number=1, started_at=FROZEN_NOW)
+    original = store.records.ensure_run
+
+    async def fail(*args, **kwargs):
+        raise OSError('capture disk unavailable')
+
+    monkeypatch.setattr(store.records, 'ensure_run', fail)
+    recorder = Recorder(store, project, 'worker')
+    await recorder.start()
+    await recorder.begin_step(task, attempt)
+    assert recorder.step_id is None
+    assert 'No captured run for project' in caplog.text
+    assert 'TypeError' not in caplog.text
+
+    monkeypatch.setattr(store.records, 'ensure_run', original)
+    await recorder.start()
+    await recorder.begin_step(task, attempt)
+    bundle = await store.records.snapshot(project.project_id)
+    assert len(bundle.steps) == 1
+    assert bundle.run.completeness == 'partial'
+    assert any('capture disk unavailable' in warning for warning in bundle.run.warnings)

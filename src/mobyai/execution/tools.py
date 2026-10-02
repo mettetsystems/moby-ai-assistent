@@ -7,15 +7,15 @@ from mobyai.tracing import traced
 
 import json
 from hashlib import sha256
-import shlex
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from mobyai.context.tokenizer import estimate_tokens, truncate_to_tokens
+from mobyai.execution.argv import split_command
 from mobyai.execution.commands import CommandResult, CommandRunner
-from mobyai.execution.errors import WorkspaceError
+from mobyai.execution.errors import PatchError, WorkspaceError
 from mobyai.execution.filesystem import WorkspaceFilesystem
 from mobyai.execution.patches import apply_patch
 from mobyai.execution.tests import TestRunner
@@ -36,6 +36,9 @@ PLANNER_INSPECT_TOOLS: frozenset[WorkerToolName] = frozenset(
         WorkerToolName.SEARCH_CODE,
         WorkerToolName.GLOB,
         WorkerToolName.FIND_FILES,
+        WorkerToolName.FILE_INFO,
+        WorkerToolName.INSPECT_PYTHON_ENVIRONMENT,
+        WorkerToolName.INSPECT_NODE_PROJECT,
     }
 )
 
@@ -109,6 +112,10 @@ class ToolDispatcher:
             )
         try:
             return await self._dispatch(call.name, call.arguments)
+        except PatchError as exc:
+            return ToolOutcome(name=call.name, ok=False,
+                error=f"{exc}. Read the current file and use edit_file with unique old_text/new_text "
+                      "and the observed source_sha256 as expected_sha256; do not repeat a stale or headerless diff.")
         except WorkspaceError as exc:
             return ToolOutcome(name=call.name, ok=False, error=str(exc))
         except (KeyError, TypeError, ValueError) as exc:
@@ -124,6 +131,12 @@ class ToolDispatcher:
         from mobyai.execution.tool_contracts import SCHEMAS
         if name.value in SCHEMAS:
             SCHEMAS[name.value].model_validate(dict(arguments))
+        from mobyai.local_tools.contracts import TOOLS as LOCAL_TOOLS
+        if name.value in LOCAL_TOOLS:
+            from mobyai.local_tools.client import call_local_tool
+            result = await call_local_tool(name.value, dict(arguments), self._workspace,
+                                          timeout_seconds=self._timeout_seconds)
+            return result.model_copy(update={"output": _trim(result.output)})
         if name is WorkerToolName.READ_FILE:
             path = _require_str(arguments, "path")
             content = await self._filesystem.read_file(path)
@@ -205,8 +218,6 @@ class ToolDispatcher:
             return _from_command(name, result)
         if name is WorkerToolName.RUN_COMMAND:
             command = split_command(arguments.get("command"))
-            if command[0] == "cd" or any(part in {"&&", "||", ";", "|"} for part in command):
-                raise ValueError("run_command uses argv, not shell syntax. Use cwd for the directory and separate calls for commands.")
             cwd = _optional_str(arguments, "cwd")
             result = await self._commands.run(
                 command,
@@ -215,20 +226,6 @@ class ToolDispatcher:
             )
             return _from_command(name, result)
         raise ValueError(f"Unsupported tool: {name}")
-
-
-def split_command(value: object) -> list[str]:
-    if isinstance(value, list):
-        parts = [item for item in value if isinstance(item, str) and item != ""]
-        if len(parts) != len(value) or not parts:
-            raise ValueError("command must be a non-empty argv list of strings")
-        return parts
-    if isinstance(value, str) and value.strip():
-        parts = shlex.split(value)
-        if not parts:
-            raise ValueError("command is empty")
-        return parts
-    raise ValueError("command must be an argv list or a non-empty string")
 
 
 def format_tool_outcomes(outcomes: Sequence[ToolOutcome]) -> str:

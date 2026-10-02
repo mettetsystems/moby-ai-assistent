@@ -96,8 +96,22 @@ Artifacts are downloaded afresh per command; use a prepared image for larger sta
 - No home-directory, GPU, host service or Docker socket mounts. Host credentials
   are not passed into the container. Secrets already inside the project are still
   readable: use a dedicated sanitized project. Never point at your home directory.
-- Projects containing symlinks, hard links, sockets or device files currently fail
-  closed. Existing venvs/node_modules may therefore require a clean project copy.
+- Ordinary symlinks are supported, including relative file/directory links, chains,
+  dangling links and loops. They are not dereferenced during the host preflight;
+  commands resolve them inside the container. Broken/cyclic links remain broken
+  until the project repairs them, but do not reject the whole workspace.
+- The same workspace is mounted at `/workspace` and at its original absolute path
+  so absolute project links and generated executable shebangs can resolve. Parent
+  directories and unrelated host targets are never mounted. Protected history is
+  read-only through both aliases; symlinks used as protected top-level history
+  directories remain rejected. Hard links, sockets and device files remain denied.
+- A link to `/usr/bin/python3` uses the image's Python, not the host binary. Existing
+  virtual environments still need compatible runtimes and native libraries; symlink
+  support does not make arbitrary host environments portable. Links to external
+  host data cannot grant access to that data.
+- Host file tools support links within their allowed workspace roots. Directory
+  listing preserves link names without dereferencing them. Reads/writes outside
+  the allowed roots remain blocked; dangling reads and loops return tool errors.
 - The MobyAI installation cannot be the sandbox target. The host file-tool layer
   retains its existing path checks; this feature isolates subprocess execution.
 - Each command starts fresh. Only workspace files persist; run service startup,

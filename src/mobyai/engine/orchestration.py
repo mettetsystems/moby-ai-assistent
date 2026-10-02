@@ -331,6 +331,11 @@ async def resolve_validation_failure(
         evidence = project.last_error
     candidates = []
     diagnosis = diagnose(evidence)
+    if diagnosis.category == "command_syntax":
+        # Workers cannot edit the saved task contract. Route this to its owner
+        # immediately, even on the first failure, instead of retrying setup.
+        target = ProjectState.ESCALATING
+        required = OrchestratorDecision.ESCALATE_TO_PLANNER
     if task.attempt_count >= 2 and diagnosis.sampling_eligible and offered is None:
         from mobyai.research.client import research_lookup
         found = await research_lookup({'query':evidence[:12000] or task.description})
@@ -359,19 +364,28 @@ async def resolve_validation_failure(
         failure_signature=memory_signature,
         token_budget=memory_token_budget,
     )
-    decision = await _ask_orchestrator(
-        orchestrator,
-        project,
-        task,
-        required,
-        max_task_attempts,
-        reduced,
-        services=services,
-        cache_evidence=candidates,
-        recovery_evidence=recovery_evidence,
-        reference_use=({"supplied":offered.payload.get("references",[]),"reported_used":used_urls} if offered else None),
-        shared_memory=shared_memory,
-    )
+    if diagnosis.category == "command_syntax":
+        decision = OrchestratorResult(
+            decision_summary="Saved validation requires command syntax repair by the Planner.",
+            decision=required,
+            task_id=task.task_id,
+            next_payload=NextPayload(target_agent=TargetAgent.PLANNER,
+                                     instruction=diagnosis.instruction),
+        )
+    else:
+        decision = await _ask_orchestrator(
+            orchestrator,
+            project,
+            task,
+            required,
+            max_task_attempts,
+            reduced,
+            services=services,
+            cache_evidence=candidates,
+            recovery_evidence=recovery_evidence,
+            reference_use=({"supplied":offered.payload.get("references",[]),"reported_used":used_urls} if offered else None),
+            shared_memory=shared_memory,
+        )
     if task.attempt_count >= 2 and diagnosis.sampling_eligible:
         if candidates and decision.cached_references_sufficient and decision.next_payload is not None:
             target = ProjectState.RETRYING
@@ -445,7 +459,7 @@ async def _ask_orchestrator(
             required_decision=required,
             attempt_count=task.attempt_count,
             max_task_attempts=max_task_attempts,
-            reduced_error=(reduced.render() if reduced is not None else (project.last_error or "")) + ("\nRECOVERY EVIDENCE: " + json.dumps(recovery_evidence) if recovery_evidence else "") + ("\n" + shared_memory if shared_memory else "") + ("\nUNTRUSTED LOCAL CACHE CANDIDATES: " + json.dumps(cache_evidence) if cache_evidence else "") + ("\nFAILED REFERENCE-ASSISTED ATTEMPT: " + json.dumps(reference_use) if reference_use else ""),
+            reduced_error=(project.last_error or "") + ("\nHarness validation:\n" + reduced.render() if reduced is not None else "") + ("\nRECOVERY EVIDENCE: " + json.dumps(recovery_evidence) if recovery_evidence else "") + ("\n" + shared_memory if shared_memory else "") + ("\nUNTRUSTED LOCAL CACHE CANDIDATES: " + json.dumps(cache_evidence) if cache_evidence else "") + ("\nFAILED REFERENCE-ASSISTED ATTEMPT: " + json.dumps(reference_use) if reference_use else ""),
         )
     except _ORCHESTRATOR_FAILURES as exc:
         target = (

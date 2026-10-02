@@ -53,13 +53,17 @@ SCHEMAS = {'read_file':ReadArguments, 'write_file':WriteArguments,
            'list_directory':DirectoryArguments,'search_code':SearchArguments,
            'glob':SearchArguments,'find_files':SearchArguments}
 
+from mobyai.local_tools.contracts import TOOLS as LOCAL_TOOLS
+SCHEMAS.update({name: definition.arguments for name, definition in LOCAL_TOOLS.items()})
+
 
 def tool_guidance():
     rows=[]
     for name,model in SCHEMAS.items():
         schema=model.model_json_schema()
         rows.append({'name':name,'required':schema.get('required',[]),
-                     'arguments':schema['properties']})
+                     'arguments':schema['properties'],
+                     **({'description': LOCAL_TOOLS[name].description} if name in LOCAL_TOOLS else {})})
     return ('Supported tool argument schemas (semantic path/range checks still apply):\n'+
             json.dumps(rows,separators=(',',':'))+
             '\nresearch_lookup accepts query for local evidence. Outbound research_search is not a worker tool.')
