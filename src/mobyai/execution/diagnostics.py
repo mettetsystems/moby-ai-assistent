@@ -13,6 +13,17 @@ class FailureDiagnosis:
 
 def diagnose(text: str) -> FailureDiagnosis:
     lower = text.lower()
+    if 'invalid service lifecycle:' in lower:
+        return FailureDiagnosis(
+            "service_lifecycle",
+            "Replace the saved foreground server command with a finite service test. "
+            "Use mobyai-service-check with the required loopback HTTP endpoint, status, "
+            "startup deadline and observation duration, or a project test that owns "
+            "startup, readiness, assertions and cleanup in one process. Preserve all "
+            "acceptance criteria and other tests. Increasing timeouts, repeating the "
+            "launch or changing sampling cannot make a server exit successfully.",
+            False, True,
+        )
     if ('invalid command syntax:' in lower or
             re.search(r'executable not found:\s*(?:source|cd|export|unset|\.)(?=[.\s]|$)', lower)):
         return FailureDiagnosis(

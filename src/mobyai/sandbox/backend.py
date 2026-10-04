@@ -26,6 +26,9 @@ async def control(*args):
     return stdout.decode().strip()
 
 def container_args(config, workspace, cwd, dependencies, name, command):
+    from mobyai.execution.service_check import COMMAND, container_command
+    if command[0] == COMMAND:
+        command = container_command(command)
     if workspace.root in (Path.home(), Path("/")):
         raise ValueError("Sandbox requires a dedicated project directory")
     for path in (workspace.root, dependencies):

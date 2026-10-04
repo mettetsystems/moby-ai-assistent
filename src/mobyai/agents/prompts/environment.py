@@ -7,6 +7,22 @@ Command execution and Python environments:
   top level. Use separate commands and run_command's cwd parameter when needed.
   Saved test_commands and run_test execute from the project root; use tool options
   or project-relative script paths for checks in subdirectories.
+- Normal commands and tests must finish. Never use a foreground server launch
+  (uvicorn, gunicorn, flask run, etc.) as a saved test or a standalone tool action.
+  Starting a server and checking it in a later call blocks before the check.
+  For HTTP service checks, run the harness command through run_test/run_command
+  or save it in test_commands, for example:
+  mobyai-service-check --url http://127.0.0.1:8000/healthz --startup-seconds 10
+  --observe-seconds 30 -- .venv/bin/python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
+  (This example is one command.) It starts the child, requires HTTP 200 and a live
+  process throughout observation, then stops the process group even on failure.
+  Choose an unused loopback port and preserve the task's actual endpoint, expected
+  status (--expected-status), duration and other assertions. For non-HTTP services
+  or richer assertions, write a bounded project test that owns the same lifecycle.
+  Do not keep a later curl test that requires the stopped service; put dependent
+  checks in the same lifecycle test. The sandbox runs both service and probe in
+  the same offline container, which needs python3 for the probe. A lifecycle
+  contract error requires correcting the plan, not extending timeouts or retrying.
 - Inspect the project manifests and existing environment before creating one.
   Use inspect_python_environment for metadata and direct interpreter commands for
   runtime checks. Reuse a working environment; a failed check does not establish

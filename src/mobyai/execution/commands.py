@@ -85,9 +85,12 @@ class CommandRunner:
             return CommandResult(command=list(command), exit_code=2, stdout="",
                                  stderr=str(exc), duration_seconds=0)
         from mobyai.sandbox.policy import current as sandbox_policy
+        from mobyai.execution.service_check import COMMAND, parse_check, run_check
         sandbox = sandbox_policy()
-        if sandbox is None and not self.allow_destructive and _is_destructive(command):
-            raise DestructiveCommandError(f"Destructive command denied: {command[0]}")
+        service = parse_check(command[1:]) if command[0] == COMMAND else None
+        executable_command = service["command"] if service else command
+        if sandbox is None and not self.allow_destructive and _is_destructive(executable_command):
+            raise DestructiveCommandError(f"Destructive command denied: {executable_command[0]}")
 
         workdir = self.workspace.resolve(cwd) if cwd is not None else self.workspace.root
         if not workdir.is_dir():
@@ -97,7 +100,7 @@ class CommandRunner:
 
         # Match npm's local-tool lookup for saved bare test commands, including
         # commands launched in a nested project directory. Never leave the workspace.
-        executable = command[0]
+        executable = executable_command[0]
         if "/" not in executable:
             directory = workdir
             while self.workspace.contains(directory):
@@ -120,6 +123,18 @@ class CommandRunner:
             if result.timed_out and policy is not None:
                 await policy.timed_out(key, timeout_seconds, f"command: {Path(command[0]).name}")
             return result
+        if service is not None:
+            started = time.monotonic()
+            try:
+                service = {**service, "command": [executable, *service["command"][1:]]}
+                result = await asyncio.wait_for(run_check(service, workdir, self.max_output_bytes), timeout_seconds)
+                return CommandResult(command=command, **result)
+            except TimeoutError:
+                if policy is not None:
+                    await policy.timed_out(key, timeout_seconds, "command: mobyai-service-check")
+                return CommandResult(command=command, exit_code=-1, stdout="",
+                    stderr=f"Service check exceeded the operation timeout of {timeout_seconds} seconds; server stopped.",
+                    duration_seconds=time.monotonic()-started, timed_out=True)
         stdout_buf = _BoundedBuffer(self.max_output_bytes)
         stderr_buf = _BoundedBuffer(self.max_output_bytes)
         started = time.monotonic()

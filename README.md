@@ -144,6 +144,7 @@ by its absolute path from another directory.
 
 ## Layout
 
+- [`docs/project-history.md`](docs/project-history.md) — complete commit chronology and original-versus-current architecture
 - [`docs/setup.md`](docs/setup.md) — operator install and config walkthrough
 - [`docs/implementation-plan.md`](docs/implementation-plan.md) — living architecture and phase tracker
 - [`docs/implementation-notes.md`](docs/implementation-notes.md) — design decisions per subsystem
@@ -1058,6 +1059,43 @@ Approval requires an idle project, is recorded as an operator event, and does no
 start work. The approved limit persists for that project. The planner cannot
 approve a higher limit through its plan schema. New projects still use the
 30-minute automatic ceiling. Restart existing runners to load this policy.
+
+### Bounded service validation
+
+The harness rejects known foreground server commands such as `uvicorn`,
+`python -m uvicorn`, and `flask run` in ordinary command tools and saved checks.
+A healthy server stays running, so waiting for it to exit only consumes the
+timeout budget. Invalid saved checks are sent directly to the Planner for repair,
+including old paused projects, before another Worker invocation or server launch.
+This detects known entry points; arbitrary scripts and shell wrappers still need
+proper lifecycle management in their project tests.
+
+For an HTTP readiness/liveness check, the Planner can save the following as **one
+test command**, and the Worker can use it through `run_test` or `run_command`:
+
+```text
+mobyai-service-check --url http://127.0.0.1:8000/healthz --startup-seconds 10 --observe-seconds 30 -- .venv/bin/python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
+```
+
+`mobyai-service-check` is a harness-owned command; no package installation inside
+the project venv is needed. It refuses an occupied port, starts the specified
+child process, waits for HTTP 200 (or `--expected-status`), and checks health and
+process liveness throughout the observation period. It then stops the process
+group on success, failure, timeout, or cancellation. An early exit, failed health
+check, or missed startup deadline fails validation. Output remains bounded, and
+the outer operation timeout and execution policy still apply.
+
+Choose the project's actual endpoint, an unused port, and the required observation
+duration. Do not leave a separate later `curl` command that expects this child to
+remain running. For richer assertions or non-HTTP services, use a finite project
+test that owns startup, readiness, assertions, and cleanup together. A successful
+health check does not establish other application requirements.
+
+In sandbox mode, both child and probe run inside the same offline container using
+the image's `python3`; the host never probes the container's service and there is
+no host fallback. The trusted bundled image includes Python; custom images must
+provide it. Reload running Moby processes to pick up these command checks before
+resuming an affected project. Existing timeout approvals are preserved.
 
 
 ### Agent reliability improvements and safe rollout

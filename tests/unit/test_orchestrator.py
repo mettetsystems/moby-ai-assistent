@@ -127,11 +127,15 @@ async def _ready_project(
     return store, workspace
 
 
-async def test_invalid_saved_command_escalates_on_first_attempt(tmp_path):
+@pytest.mark.parametrize('command,category', [
+    ('source .venv/bin/activate && pip list | grep torch', 'command_syntax'),
+    ('.venv/bin/python -m uvicorn backend.app:app --host 0.0.0.0 --port 8000', 'service_lifecycle'),
+])
+async def test_invalid_saved_command_escalates_on_first_attempt(tmp_path, command, category):
     store, workspace = await _ready_project(tmp_path)
     task = await store.tasks.get('proj-1', 'STEP_001')
     await store.tasks.save('proj-1', task.model_copy(update={
-        'test_commands': ['source .venv/bin/activate && pip list | grep torch'],
+        'test_commands': [command],
     }))
     worker_provider, worker = _worker([])
     orchestrator_provider, orchestrator = _orchestrator([])
@@ -145,7 +149,7 @@ async def test_invalid_saved_command_escalates_on_first_attempt(tmp_path):
     events = await store.events.list_for_project('proj-1')
     assert not any(event.event == 'retry_scheduled' for event in events)
     assert any(event.event == 'failure_diagnosed' and
-               event.payload['category'] == 'command_syntax' for event in events)
+               event.payload['category'] == category for event in events)
 
 
 def test_validate_orchestrator_rejects_wrong_decision() -> None:

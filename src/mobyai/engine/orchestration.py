@@ -331,7 +331,7 @@ async def resolve_validation_failure(
         evidence = project.last_error
     candidates = []
     diagnosis = diagnose(evidence)
-    if diagnosis.category == "command_syntax":
+    if diagnosis.category in {"command_syntax", "service_lifecycle"}:
         # Workers cannot edit the saved task contract. Route this to its owner
         # immediately, even on the first failure, instead of retrying setup.
         target = ProjectState.ESCALATING
@@ -364,9 +364,9 @@ async def resolve_validation_failure(
         failure_signature=memory_signature,
         token_budget=memory_token_budget,
     )
-    if diagnosis.category == "command_syntax":
+    if diagnosis.category in {"command_syntax", "service_lifecycle"}:
         decision = OrchestratorResult(
-            decision_summary="Saved validation requires command syntax repair by the Planner.",
+            decision_summary="Saved validation requires command contract repair by the Planner.",
             decision=required,
             task_id=task.task_id,
             next_payload=NextPayload(target_agent=TargetAgent.PLANNER,
