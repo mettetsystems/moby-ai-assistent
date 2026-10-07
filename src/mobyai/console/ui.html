@@ -4,6 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>MobyAI console</title>
+  <link rel="icon" type="image/png" href="/assets/moby-logo.png"/>
   <style>
     :root {
       --bg: #10141c;
@@ -35,6 +36,8 @@
       top: 0;
       z-index: 2;
     }
+    .brand { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+    .brand img { width: 64px; height: 64px; object-fit: contain; border-radius: 8px; }
     h1 { font-size: 16px; margin: 0; letter-spacing: 0.04em; }
     nav { display: flex; gap: 8px; }
     nav button, .btn {
@@ -183,7 +186,10 @@
 </head>
 <body>
   <header>
-    <h1>MobyAI console</h1>
+    <div class="brand">
+      <img src="/assets/moby-logo.png" alt="MobyAI ivory whale emblem" width="64" height="64"/>
+      <h1>MobyAI console</h1>
+    </div>
     <nav>
       <button id="tab-import" class="active" type="button">New workload</button>
       <button id="tab-settings" type="button">Settings</button>

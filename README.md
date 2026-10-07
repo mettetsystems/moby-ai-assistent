@@ -1,5 +1,9 @@
 # MobyAI
 
+<p align="center">
+  <img src="src/mobyai/console/assets/moby-logo.png" alt="MobyAI — Explore the Horizon" width="280"/>
+</p>
+
 MobyAI is a local-first agentic software engineering harness. It runs long-horizon coding projects on consumer hardware using three specialized roles (Planner, Orchestrator, Worker) behind a deterministic application that owns state, retries, tests, and files.
 
 This is not a chat-based coding assistant. Language models propose structured actions. The Python harness is the authority: it stores project state, enforces a state machine, validates schemas, executes tests, and decides what happens next.

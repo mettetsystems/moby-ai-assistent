@@ -162,6 +162,9 @@ def make_handler(service: ConsoleService) -> type[BaseHTTPRequestHandler]:
                 if not self._vault_allowed(): return
                 self._json(200, {**service.vault.status(), 'csrf_token':service.vault_csrf})
                 return
+            if parsed.path == "/assets/moby-logo.png":
+                self._send(200, (UI_PATH.parent / "assets" / "moby-logo.png").read_bytes(), "image/png")
+                return
             if parsed.path in {"/", "/index.html"}:
                 self._send(200, UI_PATH.read_text(encoding="utf-8"), "text/html; charset=utf-8")
                 return
@@ -272,8 +275,8 @@ def make_handler(service: ConsoleService) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
 
-        def _send(self, code: int, text: str, content_type: str) -> None:
-            body = text.encode("utf-8")
+        def _send(self, code: int, text: str | bytes, content_type: str) -> None:
+            body = text.encode("utf-8") if isinstance(text, str) else text
             self.send_response(code)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
