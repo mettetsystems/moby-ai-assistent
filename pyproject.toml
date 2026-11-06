@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Local-first long-horizon agentic software engineering harness"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 authors = [{ name = "MobyAI" }]
 dependencies = [
     "pydantic>=2.7",
